@@ -11,7 +11,7 @@ DEFAULT_PORT=22222
 AUTH_PASSWORD="167452Aa@"   # 建议改成自己的复杂密码
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
-SNI="https://pages.cloudflare.com"
+SNI="pages.cloudflare.com"
 ALPN="h3"
 # ------------------------------
 
@@ -128,7 +128,6 @@ quic:
   max_stream_receive_window: 131072
   initial_conn_receive_window: 131072
   max_conn_receive_window: 262144
-
 EOF
     echo "✅ 配置已写入 server.yaml（端口=${SERVER_PORT}，Brutal 已开启）"
 }
@@ -138,7 +137,6 @@ get_server_ip() {
     IP=$(curl -s --max-time 10 https://api.ipify.org || echo "YOUR_SERVER_IP")
     echo "$IP"
 }
-
 
 # ---------- 打印连接信息 ----------
 print_connection_info() {
@@ -170,5 +168,4 @@ main() {
 }
 
 main "$@"
-
 
