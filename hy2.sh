@@ -139,9 +139,6 @@ get_server_ip() {
     echo "$IP"
 }
 
-fastOpen: true
-lazy: true
-disableUDP: false
 
 # ---------- 打印连接信息 ----------
 print_connection_info() {
@@ -173,4 +170,5 @@ main() {
 }
 
 main "$@"
+
 
