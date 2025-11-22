@@ -6,7 +6,7 @@
  * 
  * 【UUID 已手动设置！请修改下方双引号内的值】
  * 
- *    const UUID = "在这里填入您的UUID";
+ *    const UUID = "a9d1699e-abc3-40a4-9935-d28ce812c077";
  * 
  *    示例：const UUID = "fdeeda45-0a8e-4570-bcc6-d68c995f5830";
  * 
@@ -20,7 +20,7 @@ import crypto from "crypto";
 
 // ================== 【手动设置 UUID】==================
 // 请将下方双引号内的值替换为您的 UUID
-const UUID = "fdeeda45-0a8e-4570-bcc6-d68c995f5830";  // 修改这里！
+const UUID = "a9d1699e-abc3-40a4-9935-d28ce812c077";  // 修改这里！
 
 // 格式校验（防止错误）
 if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(UUID)) {
@@ -54,7 +54,7 @@ function scheduleBeijingTimeMidnight(callback) {
 }
 
 // ================== 基本配置 ==================
-const MASQ_DOMAINS = ["www.bing.com"];
+const MASQ_DOMAINS = ["www.apple.com"];
 const SERVER_TOML = "server.toml";
 const CERT_PEM = "tuic-cert.pem";
 const KEY_PEM = "tuic-key.pem";
