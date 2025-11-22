@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # -*- coding: utf-8 -*-
-# Hysteria2 极简部署脚本（已内置自动测速 + Brutal 限速算法）
 # 适用于超低内存环境（32-64MB）
 
 set -e
 
 # ---------- 默认配置 ----------
 HYSTERIA_VERSION="v2.6.5"
-DEFAULT_PORT=22222
-AUTH_PASSWORD="167452Aa@"   # 建议改成自己的复杂密码
+DEFAULT_PORT="随机端口 10000-60000 之间"
+AUTH_PASSWORD="随机生成30位以上的复杂密码！！！"  # 建议改成自己的复杂密码
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
 SNI="pages.cloudflare.com"
-ALPN="h3"
+ALPN="h3,h2"
 # ------------------------------
 
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -168,4 +167,5 @@ main() {
 }
 
 main "$@"
+
 
