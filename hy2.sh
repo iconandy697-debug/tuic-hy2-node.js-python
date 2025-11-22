@@ -1,170 +1,206 @@
 #!/usr/bin/env bash
-# -*- coding: utf-8 -*-
-# Hysteria2 极简部署脚本（已内置自动测速 + Brutal 限速算法）
-# 适用于超低内存环境（32-64MB）
+# =====================================================
+# Hysteria2 极简一键部署脚本（2025最新优化版）
+# 特性：自动适配架构 │ 自动测速 │ 自签/自定义证书 │ Brutal 拥塞控制 │ 更稳定的 QUIC 参数
+# 适用于 64MB~1GB 内存的海外 VPS
+# =====================================================
 
-set -e
+set -euo pipefail
+IFS=$'\n\t'
 
-# ---------- 默认配置 ----------
-HYSTERIA_VERSION="v2.6.5"
-DEFAULT_PORT=22222
-AUTH_PASSWORD="123456Aa@"   # 建议改成自己的复杂密码
-CERT_FILE="cert.pem"
-KEY_FILE="key.pem"
+# ==================== 可自定义参数 ====================
+HYSTERIA_VERSION="v2.6.5"                  # 如需更新只需改这里
+DEFAULT_PORT=443                           # 默认端口，建议直接用 443
+AUTH_PASSWORD="${RANDOM_PASSWORD:-$(openssl rand -base64 | md5sum | head -c 16)}"
+# 密码优先级：环境变量 > 随机生成 > 手动改下面这行
+# AUTH_PASSWORD="your-strong-password-here"
+
+# 伪装域名（推荐用 Cloudflare CDN 节点）
 SNI="pages.cloudflare.com"
+ALPN="prime256v1"                           # 椭圆曲线，更快更省内存
 ALPN="h3"
-# ------------------------------
+# =====================================================
 
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-echo "Hysteria2 极简部署脚本（自动测速 + Brutal 限速算法）"
-echo "支持命令行端口参数，如：bash hy2.sh 443"
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+# 颜色输出
+RED='\033[31m'; GREEN='\033[32m'; YELLOW='\033[33m'; NC='\033[0m'
+info() { echo -e "${GREEN}[INFO]${NC} $*"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-# ---------- 获取端口 ----------
-if [[ $# -ge 1 && -n "${1:-}" ]]; then
+# 获取命令行端口
+if [[ $# -ge 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
     SERVER_PORT="$1"
-    echo "✅ 使用命令行指定端口: $SERVER_PORT"
+    info "使用命令行指定端口: $SERVER_PORT"
 else
-    SERVER_PORT="${SERVER_PORT:-$DEFAULT_PORT}"
-    echo "⚙️ 未提供端口参数，使用默认端口: $SERVER_PORT"
+    SERVER_PORT="$DEFAULT_PORT"
+    info "未指定端口，使用默认端口: $SERVER_PORT"
 fi
 
-# ---------- 检测架构 ----------
-arch_name() {
-    local machine
-    machine=$(uname -m | tr '[:upper:]' '[:lower:]')
-    if [[ "$machine" == *"arm64"* ]] || [[ "$machine" == *"aarch64"* ]]; then
-        echo "arm64"
-    elif [[ "$machine" == *"x86_64"* ]] || [[ "$machine" == *"amd64"* ]]; then
-        echo "amd64"
-    else
-        echo ""
-    fi
+# 架构检测
+detect_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64)      echo "amd64" ;;
+        aarch64|arm64)     echo "arm64" ;;
+        armv7l|armv7)      echo "arm" ;;
+        *) error "不支持的架构: $(uname -m)" ; exit 1 ;;
+    esac
 }
-
-ARCH=$(arch_name)
-if [ -z "$ARCH" ]; then
-  echo "❌ 无法识别 CPU 架构: $(uname -m)"
-  exit 1
-fi
-
+ARCH=$(detect_arch)
 BIN_NAME="hysteria-linux-${ARCH}"
-BIN_PATH="./${BIN_NAME}"
+BIN_PATH="/usr/local/bin/hysteria2"
 
-# ---------- 下载二进制 ----------
-download_binary() {
-    if [ -f "$BIN_PATH" ]; then
-        echo "✅ 二进制已存在，跳过下载。"
+# 下载最新版二进制（带缓存）
+download_hysteria() {
+    if [[ -x "$BIN_PATH" ]] && "$BIN_PATH" version 2>/dev/null | grep -q "$HYSTERIA_VERSION"; then
+        info "Hysteria2 二进制已存在且版本正确，跳过下载"
         return
     fi
-    URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/${BIN_NAME}"
-    echo "⏳ 下载: $URL"
-    curl -L --retry 3 --connect-timeout 30 -o "$BIN_PATH" "$URL"
+
+    local url="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/${BIN_NAME}"
+    info "正在下载 Hysteria2 ${HYSTERIA_VERSION} (${ARCH}) …"
+    curl -L --fail --retry 5 --retry-delay 3 -o "$BIN_PATH" "$url" || {
+        info "下载完成"
+    } || {
+        error "下载失败，请检查网络或 GitHub 是否被墙"
+        exit 1
+    }
     chmod +x "$BIN_PATH"
-    echo "✅ 下载完成并设置可执行: $BIN_PATH"
 }
 
-# ---------- 生成证书 ----------
-ensure_cert() {
-    if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
-        echo "✅ 发现证书，使用现有 cert/key。"
+# 证书处理（优先使用已有证书 → acme.sh → 自签）
+ensure_tls() {
+    if [[ -f "fullchain.pem" && -f "privkey.pem" ]]; then
+        CERT_FILE="fullchain.pem"
+        KEY_FILE="privkey.pem"
+        info "检测到 fullchain.pem / privkey.pem，已启用真实证书"
         return
     fi
-    echo "🔑 未发现证书，使用 openssl 生成自签证书（prime256v1）..."
-    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
-    echo "✅ 证书生成成功。"
-}
 
-# ---------- 自动测速 ----------
-auto_speedtest() {
-    echo "⏳ 正在自动测速（只需几秒）..."
-    local result
-    result=$(curl -s --max-time 15 https://cdn.jsdelivr.net/gh/sjlleo/Trace/flushcdn || echo "ERROR")
-    
-    if [[ "$result" == *"ERROR"* ]] || [[ -z "$result" ]]; then
-        echo "⚠️  测速失败，使用默认 300Mbps 作为保底"
-        UP_MBIT=300
-        DOWN_MBIT=300
-    else
-        UP_MBIT=$(echo "$result" | grep -o "[0-9]\+ Mbps" | head -n1 | awk '{print $1}')
-        DOWN_MBIT=$(echo "$result" | grep -o "[0-9]\+ Mbps" | tail -n1 | awk '{print $1}')
-        [[ -z "$UP_MBIT" ]] && UP_MBIT=300
-        [[ -z "$DOWN_MBIT" ]] && DOWN_MBIT=300
+    if command -v acme.sh >/dev/null 2>&1 && [[ -f "/root/.acme.sh/${SNI}_ecc/fullchain.cer" ]]; then
+        CERT_FILE="/root/.acme.sh/${SNI}_ecc/fullchain.cer"
+        KEY_FILE="/root/.acme.sh/${SNI}_ecc/${SNI}.key"
+        info "检测到 acme.sh 证书，自动使用"
+        return
     fi
-    
-    echo "✅ 测速完成 → 上行: ${UP_MBIT} Mbps   下行: ${DOWN_MBIT} Mbps"
+
+    CERT_FILE="cert.pem"
+    KEY_FILE="key.pem"
+    if [[ ! -f "$CERT_FILE" || ! -f "$KEY_FILE" ]]; then
+        info "生成自签名 ECC 证书（${PN}，10年有效期）"
+        openssl ecparam -genkey -name "$PN" -out "$KEY_FILE"
+        openssl req -new -x509 -key "$KEY_FILE" -out "$CERT_FILE" -days 3650 \
+            -subj "/CN=${SNI}" -addext "subjectAltName=DNS:${SNI}"
+    fi
+    info "使用自签名证书"
 }
 
-# ---------- 写配置文件（关键修改点）----------
+# 自动测速（多 CDN 兜底）
+auto_speedtest() {
+    info "自动测速中（最长15秒）..."
+    local sources=(
+        "https://cdn.jsdelivr.net/gh/sjlleo/Trace/flushcdn"
+        "https://fastly.jsdelivr.net/gh/sjlleo/Trace/flushcdn"
+        "https://gcore.jsdelivr.net/gh/sjlleo/Trace/flushcdn"
+    )
+    for src
+    for src in "${sources[@]}"; do
+        local result
+        result=$(curl -s --max-time 12 "$src" ) && [[ "$result" != "" ]] || continue
+
+        UP=$(echo "$result" | grep -o '[0-9]\+ Mbps' | sed -n 1p | awk '{print $1}')
+        DOWN=$(echo "$result" | grep -o '[0-9]\+ Mbps' | sed -n 2p | awk '{print $1}')
+        [[ -n "$UP" && -n "$DOWN" ]] && break
+    done
+
+    # 兜底值
+    UP=${UP:-200}
+    DOWN=${DOWN:-300}
+
+    # 给 Brutal 留足空间，实际填高一点
+    UP_MBIT=$(( UP * 6 / 5 ))
+    DOWN_MBIT=$(( DOWN * 6 / 5 ))
+
+    info "测速结果 → 上行 ${UP}Mbps → 填 ${UP_MBIT}Mbps   下行 ${DOWN}Mbps → 填 ${DOWN_MBIT}Mbps"
+}
+
+# 写配置文件
 write_config() {
-    cat > server.yaml <<EOF
-listen: ":${SERVER_PORT}"
+    cat > /etc/hysteria2.yaml <<EOF
+listen: :${SERVER_PORT}
 
 tls:
-  cert: "$(pwd)/${CERT_FILE}"
-  key: "$(pwd)/${KEY_FILE}"
-  alpn:
-    - "${ALPN}"
+  cert: $(realpath "$CERT_FILE")
+  key: $(realpath "$KEY_FILE")
 
 auth:
-  type: "password"
-  password: "${AUTH_PASSWORD}"
+  type: password
+  password: ${AUTH_PASSWORD}
 
-# 自动填入真实带宽
 bandwidth:
-  up: "${UP_MBIT} mbps"
-  down: "${DOWN_MBIT} mbps"
+  up: ${UP_MBIT} mbps
+  down: ${DOWN_MBIT} mbps
 
-# 开启 Brutal 拥塞控制（最猛的保底 50~100Mbps 模式）
 brutal:
   enabled: true
-  sendBBR: false   # 保持 false，性能最佳
+  sendBBR: false
 
 quic:
-  max_idle_timeout: "10s"
-  max_concurrent_streams: 4
-  initial_stream_receive_window: 65536
-  max_stream_receive_window: 131072
-  initial_conn_receive_window: 131072
-  max_conn_receive_window: 262144
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 60s
+  keepAlivePeriod: 10s
+  disablePathMTUDiscovery: false
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://news.ycombinator.com/
+    rewriteHost: true
 EOF
-    echo "✅ 配置已写入 server.yaml（端口=${SERVER_PORT}，Brutal 已开启）"
+    info "配置文件已写入 /etc/hysteria2.yaml"
 }
 
-# ---------- 获取服务器 IP ----------
-get_server_ip() {
-    IP=$(curl -s --max-time 10 https://api.ipify.org || echo "YOUR_SERVER_IP")
-    echo "$IP"
+# 获取公网 IP
+get_ip() {
+    curl -s --max-time 8 https://api.ipify.org || curl -s https://ifconfig.me
 }
 
-# ---------- 打印连接信息 ----------
-print_connection_info() {
-    local IP="$1"
-    echo "🎉 Hysteria2 部署成功！（Brutal 限速算法已开启）"
-    echo "=========================================================================="
-    echo "📋 服务器信息:"
-    echo "   🌐 IP地址: $IP"
-    echo "   🔌 端口: $SERVER_PORT"
-    echo "   🔑 密码: $AUTH_PASSWORD"
-    echo "   🚀 实测带宽: 上行 ${UP_MBIT}Mbps / 下行 ${DOWN_MBIT}Mbps"
-    echo ""
-    echo "📱 节点链接（SNI=${SNI}, ALPN=${ALPN}, 跳过证书验证）:"
-    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#Hy2-Brutal"
-    echo ""
-    echo "=========================================================================="
+# 打印信息 & 生成客户端链接
+print_info() {
+    local ip=$(get_ip)
+    echo
+    echo "════════════════════════════════════════════════"
+    echo "           Hysteria2 部署完成！"
+    echo "════════════════════════════════════════════════"
+    echo "服务器 IP   : $ip"
+    echo "端口        : $SERVER_PORT"
+    echo "密码        : $AUTH_PASSWORD"
+    echo "带宽填充    : 上行 ${UP_MBIT}Mbps / 下行 ${DOWN_MBIT}Mbps"
+    echo "SNI         : $SNI"
+    echo "跳过证书验证: 是（insecure=1）"
+    echo
+    echo "【客户端一键导入链接】"
+    echo "hysteria2://${AUTH_PASSWORD}@${ip}:${SERVER_PORT}/?sni=${SNI}&alpn=${ALPN}&insecure=1#Hy2-Brutal-${ip}"
+    echo
+    echo "建议配合 Clash Meta / Nekobox / Sing-Box 使用"
+    echo "════════════════════════════════════════════════"
 }
 
-# ---------- 主逻辑 ----------
+# ==================== 主流程 ====================
 main() {
-    download_binary
-    ensure_cert
-    auto_speedtest          # ← 新增：自动测速
-    write_config            # ← 使用测出来的带宽 + 开启 brutal
-    SERVER_IP=$(get_server_ip)
-    print_connection_info "$SERVER_IP"
-    echo "🚀 启动 Hysteria2 服务器（Brutal 已启用）..."
-    exec "$BIN_PATH" server -c server.yaml
+    [[ $EUID -ne 0 ]] && error "请用 root 权限运行" && exit 1
+
+    download_hysteria
+    ensure_tls
+    auto_speedtest
+    write_config
+
+    # 启动方式一：直接前台运行（适合 screen/tmux）
+    print_info
+    echo "正在启动 Hysteria2 服务端..."
+    exec "$BIN_PATH" server -c /etc/hysteria2.yaml
 }
 
 main "$@"
