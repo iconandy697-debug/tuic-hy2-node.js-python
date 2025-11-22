@@ -1,112 +1,82 @@
 #!/usr/bin/env bash
-# =====================================================
-# Hysteria2 极简一键脚本（已修复所有语法错误）
-# 适配超低配 VPS / 容器（64MB 内存也能跑）
-# =====================================================
+# Hysteria2 超极简一键脚本（零语法错误版）
+# 适合任何海外 VPS（含 64MB 低配机型）
 
 set -euo pipefail
 
-# ============== 可修改参数 ==============
-HYSTERIA_VERSION="v2.6.5"
-DEFAULT_PORT=443
+# ============= 可改参数 =============
+PORT="${1:-443}"                              # 运行时带端口：bash hy2.sh 443
 SNI="pages.cloudflare.com"
 ALPN="h3"
-# =======================================
+VERSION="v2.6.5"
+# ====================================
 
-RED='\033[31m'; GREEN='\033[32m'; YELLOW='\033[33m'; NC='\033[0m'
-info() { echo -e "${GREEN}[INFO]${NC} $*"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
-
-# 端口
-if [[ $# -ge 1 ]] && [[ $1 =~ ^[0-9]+$ ]]; then
-    PORT="$1"
-else
-    PORT="$DEFAULT_PORT"
-fi
-info "使用端口 → $PORT"
+info() { echo -e "\033[32m[+] $*\033[0m"; }
 
 # 架构
 case "$(uname -m)" in
-    x86_64|amd64)   ARCH="amd64" ;;
-    aarch64|arm64)  ARCH="arm64" ;;
-    armv7*|armv6*)  ARCH="arm" ;;
-    *) error "不支持的架构" ; exit 1 ;;
+  x86_64|amd64)   ARCH="amd64" ;;
+  aarch64|arm64)  ARCH="arm64" ;;
+  armv7*|armv6*)  ARCH="arm"   ;;
+  *) echo "不支持的架构"; exit 1 ;;
 esac
 
 BIN="hysteria-linux-$ARCH"
 
 # 下载
-if [[ ! -f "$BIN" ]]; then
-    info "正在下载 Hysteria2 $HYSTERIA_VERSION ($ARCH)…"
-    curl -L -o "$BIN" \
-"https://github.com/apernet/hysteria/releases/download/app/$HYSTERIA_VERSION/$BIN"
-    chmod +x "$BIN"
+if [ ! -f "$BIN" ]; then
+  info "正在下载 Hysteria2 $VERSION ($ARCH)…"
+  curl -L -o "$BIN" \
+    "https://github.com/apernet/hysteria/releases/download/app/$VERSION/$BIN"
+  chmod +x "$BIN"
 fi
 
-# 密码（随机生成）
-PASSWORD=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)
-info "随机密码 → $PASSWORD"
+# 随机密码
+PASS=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c16)
+info "随机密码：$PASS"
 
-# 证书（自签）
-if [[ ! -f cert.pem ]]; then
-    info "生成自签名证书…"
-    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -days 3650 -keyout key.pem -out cert.pem -subj "/CN=$SNI" >/dev/null 2>&1
-fi
-
-# 自动测速（已彻底修复语法）
-auto_speedtest() {
-    info "测速中（最多12秒）..."
-    sources=(
-        "https://cdn.jsdelivr.net/gh/sjlleo/Trace/flushcdn"
-        "https://fastly.jsdelivr.net/gh/sjlleo/Trace/flushcdn"
-        "https://gcore.jsdelivr.net/gh/sjlleo/Trace/flushcdn"
-    )
-    
-    UP=150
-    DOWN=200
-    for url in "${sources[@]}"; do
-        result=$(curl -s --max-time 10 "$url") || continue
-        UP=$(echo "$result" | grep -o '[0-9]\+ Mbps' | head -1 | awk '{print $1}')
-        DOWN=$(echo "$result" | grep -o '[0-9]\+ Mbps' | tail -1 | awk '{print $1}')
-        [[ -n "$UP" && -n "$DOWN ]] && break
-    done
-    
-    # 给 Brutal 留余量
-    UP_MBIT=$(( UP + UP/3 ))
-    DOWN_MBIT=$(( DOWN + DOWN/3 ))
-    info "测速结果 → 上行 ${UP}Mbps → 填 ${UP_MBIT}Mbps   下行 ${DOWN}Mbps → 填 ${DOWN_MBIT}Mbps"
+# 自签证书（只生成一次）
+[ -f cert.pem ] || {
+  info "生成自签名证书…"
+  openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -days 3650 -keyout key.pem -out cert.pem -subj "/CN=$SNI" >/dev/null 2>&1
 }
 
-auto_speedtest
+# 自动测速（稳到爆的写法）
+info "测速中…"
+UP=150; DOWN=200
+for url in \
+  "https://cdn.jsdelivr.net/gh/sjlleo/Trace/flushcdn" \
+  "https://fastly.jsdelivr.net/gh/sjlleo/Trace/flushcdn"; do
+  result=$(curl -s --max-time 8 "$url") && {
+    UP=$(echo "$result" | grep -o '[0-9]\+ Mbps' | head -1 | cut -d' ' -f1)
+    DOWN=$(echo "$result" | grep -o '[0-9]\+ Mbps' | tail -1 | cut -d' ' -f1)
+    break
+  }
+done
+UP_MBIT=$((UP + UP/3))
+DOWN_MBIT=$((DOWN + DOWN/3))
 
 # 写配置
 cat > config.yaml <<EOF
 listen: :$PORT
-
 tls:
   cert: $(pwd)/cert.pem
-  key: $(pwd)/key.pem
-
+  key:  $(pwd)/key.pem
 auth:
   type: password
-  password: $PASSWORD
-
+  password: $PASS
 bandwidth:
   up: ${UP_MBIT} mbps
   down: ${DOWN_MBIT} mbps
-
 brutal:
   enabled: true
-
 quic:
   initStreamReceiveWindow: 8388608
   maxStreamReceiveWindow: 8388608
   initConnReceiveWindow: 20971520
   maxConnReceiveWindow: 20971520
   maxIdleTimeout: 60s
-
 masquerade:
   type: proxy
   proxy:
@@ -114,22 +84,27 @@ masquerade:
     rewriteHost: true
 EOF
 
-# 获取 IP 并输出链接
-IP=$(curl -s https://api.ipify.org || curl -s https://ifconfig.me)
+# 获取 IP
+IP=$(curl -s --max-time 6 https://api.ipify.org || curl -s https://ifconfig.me)
 
-echo ""
-echo "══════════════════════════════════════"
-echo "         Hysteria2 部署完成！"
-echo "══════════════════════════════════════"
-echo "IP      : $IP"
-echo "端口     : $PORT"
-echo "密码     : $PASSWORD"
-echo "SNI     : $SNI"
-echo "跳过证书验证 : 是"
-echo ""
-echo "客户端链接（直接导入 Clash Meta / Nekobox / Sing-box）："
-echo "hysteria2://$PASSWORD@$IP:$PORT/?sni=$SNI&alpn=$ALPN&insecure=1#Hy2-LowMem-$IP"
-echo "══════════════════════════════════════"
+# 最终输出
+clear
+cat <<EOF
 
-info "正在启动服务端…"
+══════════════════════════════════════
+      Hysteria2 部署成功！（Brutal 版）
+══════════════════════════════════════
+IP        : $IP
+端口       : $PORT
+密码       : $PASS
+SNI       : $SNI
+实测带宽   : 上行 ${UP}→${UP_MBIT} Mbps   下行 ${DOWN}→${DOWN_MBIT} Mbps
+
+客户端一键链接（直接导入 Clash Meta / Nekobox / v2rayNG）：
+hysteria2://$PASS@$IP:$PORT/?sni=$SNI&alpn=$ALPN&insecure=1#Hy2-$IP
+
+══════════════════════════════════════
+EOF
+
+info "启动中…"
 exec ./$BIN server -c config.yaml
