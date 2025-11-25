@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Hysteria2 2025年最新可用极简一键脚本（兼容32-64MB内存）
-# 修复了：brutal 删除、bandwidth 语法错误、quic 参数失效等问题
+# Hysteria2 2025年11月最新修复版（v2.6.5，Brutal 正确配置）
+# 修复：congestion -> bandwidth；bruteforce -> Brutal 自动；QUIC 参数名
 
 set -e
 
-HYSTERIA_VERSION="v2.6.5"      # 2025年11月最新稳定版
+HYSTERIA_VERSION="v2.6.5"
 DEFAULT_PORT=22222
-AUTH_PASSWORD=$(openssl rand -base64 32)
-SNI_LIST=("bing.com" "www.bing.com" "www.microsoft.com" "www.apple.com")
+AUTH_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9')
+SNI_LIST=("www.bing.com" "www.microsoft.com" "www.apple.com" "time.apple.com")
 SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
 
 if [[ $1 =~ ^[0-9]+$ ]]; then
@@ -16,45 +16,47 @@ else
     PORT="$DEFAULT_PORT"
 fi
 
-echo "使用端口: $PORT"
+echo "🚀 使用端口: $PORT | SNI: $SNI"
 
 # 架构检测
 case "$(uname -m)" in
-    x86_64)  ARCH="amd64" ;;
+    x86_64|amd64) ARCH="amd64" ;;
     aarch64|arm64) ARCH="arm64" ;;
-    *) echo "不支持的架构"; exit 1 ;;
+    *) echo "❌ 不支持的架构: $(uname -m)"; exit 1 ;;
 esac
 
 BIN="hysteria-linux-$ARCH"
 
-# 下载最新二进制
+# 下载二进制
 if [ ! -f "$BIN" ]; then
-    echo "正在下载 Hysteria2 $HYSTERIA_VERSION ..."
-    curl -L -o "$BIN" "https://github.com/apernet/hysteria/releases/download/app/$HYSTERIA_VERSION/$BIN"
+    echo "⏳ 下载 Hysteria2 $HYSTERIA_VERSION..."
+    curl -L -o "$BIN" "https://github.com/apernet/hysteria/releases/download/app/$HYSTERIA_VERSION/$BIN" --retry 3
     chmod +x "$BIN"
+    echo "✅ 下载完成。验证: ./$BIN version"
 fi
 
-# 自签证书（必须用 ECC）
+# 证书（ECC 自签）
 if [ ! -f cert.pem ] || [ ! -f key.pem ]; then
-    echo "生成自签证书..."
+    echo "🔑 生成证书..."
     openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout key.pem -out cert.pem -days 3650 -subj "/CN=$SNI"
 fi
 
-# 自动测速（保留你原来的逻辑）
-echo "测速中..."
-result=$(curl -s --max-time 12 https://cdn.jsdelivr.net/gh/sjlleo/Trace/flushcdn || echo "ERROR")
-if [[ $result == *"ERROR"* ]]; then
-    UP=300; DOWN=300
+# 自动测速（加保底逻辑，避免高值丢包）
+echo "⏳ 测速中..."
+result=$(curl -s --max-time 10 https://cdn.jsdelivr.net/gh/sjlleo/Trace/flushcdn || echo "ERROR")
+if [[ $result == *"ERROR"* || -z "$result" ]]; then
+    UP=100; DOWN=100  # 保底低值，防弱网
 else
-    UP=$(echo "$result" | grep -o "[0-9]\+ Mbps" | head -n1 | cut -d' ' -f1)
-    DOWN=$(echo "$result" | grep -o "[0-9]\+ Mbps" | tail -n1 | cut -d' ' -f1)
-    [[ -z "$UP" || "$UP" -lt 50 ]] && UP=300
-    [[ -z "$DOWN" || "$DOWN" -lt 50 ]] && DOWN=300
+    UP=$(echo "$result" | grep -o "[0-9]\+[0-9]* Mbps" | head -n1 | grep -o "[0-9]\+" || echo "100")
+    DOWN=$(echo "$result" | grep -o "[0-9]\+[0-9]* Mbps" | tail -n1 | grep -o "[0-9]\+" || echo "100")
+    # 限制上限，避免 Brutal 过度
+    [[ $UP -gt 500 ]] && UP=500
+    [[ $DOWN -gt 500 ]] && DOWN=500
 fi
-echo "实测带宽 ≈ 上行 ${UP}Mbps 下行 ${DOWN}Mbps"
+echo "✅ 实测带宽：上行 ${UP}Mbps / 下行 ${DOWN}Mbps"
 
-# 2025 年正确的 server.yaml（重点！！！）
+# 正确 server.yaml（Brutal 自动启用，带宽非零即 Brutal）
 cat > server.yaml <<EOF
 listen: :$PORT
 
@@ -66,42 +68,41 @@ auth:
   type: password
   password: $AUTH_PASSWORD
 
-# 关键：新版必须这样写带宽 + 拥塞控制
-congestion:
-  type: bruteforce        # 2024-2025 年唯一还能“猛”的拥塞控制（原来 brutal 的继任者）
-  bruteforce:
-    up: ${UP} mbps
-    down: ${DOWN} mbps
+# 正确：直接 bandwidth 启用 Brutal（无 congestion 块）
+bandwidth:
+  up: ${UP} mbps
+  down: ${DOWN} mbps
 
-# 伪装（防止某些运营商探测）
+# 伪装（可选，防探测）
 masquerade:
   type: proxy
   proxy:
-    url: https://news.ycombinator.com/
+    url: https://www.bing.com/
     rewriteHost: true
 
-# 可选：提高弱网穿透力
+# QUIC（新版参数名，弱网优化）
 quic:
-  initStreamReceiveWindow: 8388608
+  initialStreamReceiveWindow: 8388608
   maxStreamReceiveWindow: 8388608
-  initConnReceiveWindow: 20971520
+  initialConnReceiveWindow: 20971520
   maxConnReceiveWindow: 20971520
   maxIdleTimeout: 30s
+  disablePathMTUDiscovery: false  # 启用 PMTU 发现，提高稳定性
 EOF
 
-IP=$(curl -s https://api.ipify.org)
+IP=$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
 
-echo "============================================================"
-echo "         Hysteria2 部署完成！"
-echo "IP      : $IP"
-echo "端口    : $PORT"
-echo "密码    : $AUTH_PASSWORD"
-echo "SNI     : $SNI"
-echo "拥塞控制: bruteforce（原 brutal 升级版）"
+echo "🎉 部署完成！"
+echo "📋 服务器信息:"
+echo "   IP: $IP"
+echo "   端口: $PORT"
+echo "   密码: $AUTH_PASSWORD"
+echo "   带宽: 上 ${UP} / 下 ${DOWN} Mbps (Brutal 已启用)"
+echo "   SNI: $SNI"
 echo ""
-echo "客户端链接（跳过证书验证）:"
-echo "hysteria2://$AUTH_PASSWORD@$IP:$PORT/?sni=$SNI&insecure=1#Hy2-2025"
+echo "📱 客户端 URI (insecure=1 跳证书):"
+echo "hysteria2://$AUTH_PASSWORD@$IP:$PORT?sni=$SNI&insecure=1#Hy2-Brutal-v2.6.5"
 echo "============================================================"
 
-echo "启动服务器..."
+echo "🚀 启动服务器（查日志排查）..."
 exec ./$BIN server -c server.yaml
