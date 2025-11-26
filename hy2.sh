@@ -12,7 +12,7 @@ set -e
 HYSTERIA_VERSION="v2.6.5"
 DEFAULT_PORT=22222
 AUTH_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9')
-SNI_LIST=("www.bing.com" "www.microsoft.com" "www.apple.com" "time.apple.com")
+SNI_LIST=( "www.apple.com" "time.apple.com")
 SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
 
 if [[ $1 =~ ^[0-9]+$ ]]; then
@@ -55,10 +55,10 @@ if [[ $result == *"ERROR"* || -z "$result" ]]; then
 else
     UP=$(echo "$result" | grep -o "[0-9]\+ Mbps" | head -n1 | grep -o "[0-9]\+" || echo "100")
     DOWN=$(echo "$result" | grep -o "[0-9]\+ Mbps" | tail -n1 | grep -o "[0-9]\+" || echo "100")
-    [[ -z "$UP" ]] && UP=100
-    [[ -z "$DOWN" ]] && DOWN=100
-    [[ $UP -gt 500 ]] && UP=500
-    [[ $DOWN -gt 500 ]] && DOWN=500
+    [[ -z "$UP" ]] && UP=20
+    [[ -z "$DOWN" ]] && DOWN=50
+    [[ $UP -gt 500 ]] && UP=20
+    [[ $DOWN -gt 500 ]] && DOWN=50
 fi
 echo "✅ 实测带宽：上行 ${UP}Mbps / 下行 ${DOWN}Mbps"
 
@@ -81,7 +81,7 @@ bandwidth:
 masquerade:
   type: proxy
   proxy:
-    url: https://www.bing.com/
+    url: https://www.apple.com/
     rewriteHost: true
 
 quic:
@@ -108,3 +108,4 @@ echo "============================================================"
 
 echo "🚀 启动服务器（查日志排查）..."
 exec ./$BIN server -c server.yaml
+
