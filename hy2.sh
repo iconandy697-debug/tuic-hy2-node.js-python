@@ -6,7 +6,7 @@ set -e
 HYSTERIA_VERSION="v2.6.5"
 DEFAULT_PORT=22222
 AUTH_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9')
-SNI_LIST=("www.bing.com" "www.microsoft.com" "www.apple.com" "time.apple.com")
+SNI_LIST=("www.microsoft.com" "www.apple.com" "time.apple.com" "www.bing.com" )
 SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
 
 if [[ $1 =~ ^[0-9]+$ ]]; then
@@ -42,7 +42,6 @@ fi
 
 # 测速逻辑（不变，保底100Mbps + 上限500Mbps）
 
-# ==================== 以下是【红色高亮】的真正修改部分 ====================
 
 cat > server.yaml <<EOF
 listen: :$PORT
@@ -59,9 +58,6 @@ bandwidth:
   up: ${UP} mbps
   down: ${DOWN} mbps
 
-# ██████████████████ 【核心修复1】移除必翻车 proxy 伪装 ██████████████████
-# 旧：type: proxy + url: https://www.bing.com/  → 99%的人连不上
-# 新：用 string 返回 404，零延迟、无外部依赖、永不被墙
 masquerade:
   type: string
   content: "404 Not Found\n\nHysteria2 Server - Powered by apernet"
@@ -99,3 +95,4 @@ echo "hysteria2://$AUTH_PASSWORD@$IP:$PORT?sni=$SNI&insecure=1#Hy2-Fixed-2025"
 echo ""
 echo "启动服务器..."
 exec ./$BIN server -c server.yaml
+
