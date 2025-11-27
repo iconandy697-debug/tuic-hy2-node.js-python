@@ -1,71 +1,17 @@
 #!/usr/bin/env bash
-# -*- coding: utf-8 -*-
-# Hysteria2 极简部署脚本（支持命令行端口参数 + 默认跳过证书验证 + 自动开启BBR）
-# 适用于超低内存环境（32-64MB）
+# Hysteria2 部署 + Node.js BBR 检测组合启动脚本
 
 set -e
 
 # ---------- 默认配置 ----------
 HYSTERIA_VERSION="v2.6.5"
-DEFAULT_PORT=22222         # 自适应端口
+DEFAULT_PORT=22222
 gen_pw() { openssl rand -base64 32 | head -c20; }
-AUTH_PASSWORD=$(gen_pw)   # 建议修改为复杂密码
+AUTH_PASSWORD=$(gen_pw)
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
 SNI="cloudflare.com"
 ALPN_LIST=("h3" "h2")
-# ------------------------------
-const { exec } = require('child_process');
-
-/**
- * 执行命令并返回 Promise
- */
-function runCommand(cmd) {
-  return new Promise((resolve, reject) => {
-    exec(cmd, (err, stdout, stderr) => {
-      if (err) {
-        reject(stderr || err.message);
-      } else {
-        resolve(stdout.trim());
-      }
-    });
-  });
-}
-
-/**
- * 检查是否启用了 BBR 拥塞控制
- */
-async function checkBBR() {
-  try {
-    const algo = await runCommand('sysctl net.ipv4.tcp_congestion_control');
-    console.log('📋 当前拥塞控制算法:', algo);
-
-    if (algo.includes('bbr')) {
-      console.log('✅ 已启用 BBR 拥塞控制，网络加速生效');
-    } else {
-      console.log('⚠️ 未启用 BBR，建议在宿主机执行以下命令:');
-      console.log('   sysctl -w net.core.default_qdisc=fq');
-      console.log('   sysctl -w net.ipv4.tcp_congestion_control=bbr');
-    }
-  } catch (error) {
-    console.error('❌ 无法检测拥塞控制算法，可能未安装 sysctl 或环境受限');
-    try {
-      const kernel = await runCommand('uname -r');
-      console.log('ℹ️ 当前内核版本:', kernel);
-      console.log('👉 提示: BBR 需要 Linux 内核 >= 4.9');
-    } catch {
-      console.log('⚠️ 无法获取内核版本信息');
-    }
-  }
-}
-
-// 启动时检测
-checkBBR();
-
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-echo "Hysteria2 极简部署脚本（Shell 版）"
-echo "支持命令行端口参数，如：bash hysteria2.sh 443"
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 
 # ---------- 获取端口 ----------
 if [[ $# -ge 1 && -n "${1:-}" ]]; then
@@ -120,7 +66,7 @@ ensure_cert() {
         echo "✅ 发现证书，使用现有 cert/key。"
         return
     fi
-    echo "🔑 未发现证书，使用 openssl 生成自签证书（prime256v1）..."
+    echo "🔑 未发现证书，使用 openssl 生成自签证书..."
     openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=localhost"
     echo "✅ 证书生成成功。"
@@ -138,7 +84,6 @@ $(for a in "${ALPN_LIST[@]}"; do echo "    - $a"; done)
 auth:
   type: "password"
   password: "${AUTH_PASSWORD}"
-# 建议去掉带宽限制，让 Hysteria2 自适应
 quic:
   max_idle_timeout: "10s"
   max_concurrent_streams: 64
@@ -150,17 +95,6 @@ EOF
     echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}）。"
 }
 
-# ---------- 开启 BBR 拥塞控制 ----------
-enable_bbr() {
-    echo "⚙️ 开启 BBR 拥塞控制..."
-    cat >> /etc/sysctl.conf <<EOF
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-EOF
-    sysctl -p
-    echo "✅ 当前拥塞控制算法: $(sysctl net.ipv4.tcp_congestion_control)"
-}
-
 # ---------- 获取服务器 IP ----------
 get_server_ip() {
     IP=$(curl -s --max-time 10 https://api.ipify.org || echo "YOUR_SERVER_IP")
@@ -170,17 +104,17 @@ get_server_ip() {
 # ---------- 打印连接信息 ----------
 print_connection_info() {
     local IP="$1"
-    echo "🎉 Hysteria2 部署成功！（极简优化版 + BBR）"
+    echo "🎉 Hysteria2 部署成功！（极简优化版）"
     echo "=========================================================================="
     echo "📋 服务器信息:"
     echo "   🌐 IP地址: $IP"
     echo "   🔌 端口: $SERVER_PORT"
     echo "   🔑 密码: $AUTH_PASSWORD"
     echo ""
-    echo "📱 节点链接（SNI=${SNI}, ALPN=${ALPN_LIST[*]}, 跳过证书验证）:"
+    echo "📱 节点链接:"
     echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN_LIST[*]}&insecure=1#Hy2-Bing"
     echo ""
-    echo "📄 客户端配置文件:"
+    echo "📄 客户端配置文件示例:"
     echo "server: ${IP}:${SERVER_PORT}"
     echo "auth: ${AUTH_PASSWORD}"
     echo "tls:"
@@ -199,12 +133,14 @@ main() {
     download_binary
     ensure_cert
     write_config
-    enable_bbr
     SERVER_IP=$(get_server_ip)
     print_connection_info "$SERVER_IP"
+
     echo "🚀 启动 Hysteria2 服务器..."
-    exec "$BIN_PATH" server -c server.yaml
+    "$BIN_PATH" server -c server.yaml &
+
+    echo "🔍 启动 Node.js 脚本检测 BBR..."
+    node check-bbr.js || echo "⚠️ Node.js 检测脚本未运行，请确认已安装 Node.js"
 }
 
 main "$@"
-
