@@ -13,7 +13,7 @@ AUTH_PASSWORD=$(gen_pw)    # 自动生成随机密码
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
 SNI="cloudflare.com"       # 去掉前导空格
-ALPN_LIST=("h3" "h2")      # 使用数组存储 ALPN
+ALPN_LIST=("h3","h2")      # 使用数组存储 ALPN
 # ------------------------------
 
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -146,3 +146,4 @@ main() {
 }
 
 main "$@"
+
