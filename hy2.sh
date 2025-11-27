@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
-# Hysteria2 部署 + Node.js BBR 检测组合启动脚本
+# -*- coding: utf-8 -*-
+# Hysteria2 极简部署脚本（支持命令行端口参数 + 默认跳过证书验证）
+# 适用于超低内存环境（32-64MB）
 
 set -e
 
 # ---------- 默认配置 ----------
 HYSTERIA_VERSION="v2.6.5"
-DEFAULT_PORT=22222
+DEFAULT_PORT=22222         # 自适应端口
 gen_pw() { openssl rand -base64 32 | head -c20; }
-AUTH_PASSWORD=$(gen_pw)
+AUTH_PASSWORD=$(gen_pw)   # 建议修改为复杂密码
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
-SNI="cloudflare.com"
-ALPN_LIST=("h3" "h2")
+SNI=" cloudflare.com"
+ALPN="h3,h2"
+# ------------------------------
+
+echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+echo "Hysteria2 极简部署脚本（Shell 版）"
+echo "支持命令行端口参数，如：bash hysteria2.sh 443"
+echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 
 # ---------- 获取端口 ----------
 if [[ $# -ge 1 && -n "${1:-}" ]]; then
@@ -52,10 +60,7 @@ download_binary() {
     fi
     URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/${BIN_NAME}"
     echo "⏳ 下载: $URL"
-    if ! curl -L --retry 3 --connect-timeout 30 -o "$BIN_PATH" "$URL"; then
-        echo "❌ 下载失败，请检查网络或版本号"
-        exit 1
-    fi
+    curl -L --retry 3 --connect-timeout 30 -o "$BIN_PATH" "$URL"
     chmod +x "$BIN_PATH"
     echo "✅ 下载完成并设置可执行: $BIN_PATH"
 }
@@ -66,9 +71,9 @@ ensure_cert() {
         echo "✅ 发现证书，使用现有 cert/key。"
         return
     fi
-    echo "🔑 未发现证书，使用 openssl 生成自签证书..."
+    echo "🔑 未发现证书，使用 openssl 生成自签证书（prime256v1）..."
     openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=localhost"
+        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
     echo "✅ 证书生成成功。"
 }
 
@@ -80,19 +85,22 @@ tls:
   cert: "$(pwd)/${CERT_FILE}"
   key: "$(pwd)/${KEY_FILE}"
   alpn:
-$(for a in "${ALPN_LIST[@]}"; do echo "    - $a"; done)
+    - "${ALPN}"
 auth:
   type: "password"
   password: "${AUTH_PASSWORD}"
+bandwidth:
+  up: "200mbps"
+  down: "200mbps"
 quic:
   max_idle_timeout: "10s"
-  max_concurrent_streams: 64
-  initial_stream_receive_window: 1m
-  max_stream_receive_window: 4m
-  initial_conn_receive_window: 4m
-  max_conn_receive_window: 16m
+  max_concurrent_streams: 4
+  initial_stream_receive_window: 65536
+  max_stream_receive_window: 131072
+  initial_conn_receive_window: 131072
+  max_conn_receive_window: 262144
 EOF
-    echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}）。"
+    echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=${ALPN}）。"
 }
 
 # ---------- 获取服务器 IP ----------
@@ -111,15 +119,15 @@ print_connection_info() {
     echo "   🔌 端口: $SERVER_PORT"
     echo "   🔑 密码: $AUTH_PASSWORD"
     echo ""
-    echo "📱 节点链接:"
-    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN_LIST[*]}&insecure=1#Hy2-Bing"
+    echo "📱 节点链接（SNI=${SNI}, ALPN=${ALPN}, 跳过证书验证）:"
+    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#Hy2-Bing"
     echo ""
-    echo "📄 客户端配置文件示例:"
+    echo "📄 客户端配置文件:"
     echo "server: ${IP}:${SERVER_PORT}"
     echo "auth: ${AUTH_PASSWORD}"
     echo "tls:"
     echo "  sni: ${SNI}"
-    echo "  alpn: [\"${ALPN_LIST[*]}\"]"
+    echo "  alpn: [\"${ALPN}\"]"
     echo "  insecure: true"
     echo "socks5:"
     echo "  listen: 127.0.0.1:1080"
@@ -135,12 +143,10 @@ main() {
     write_config
     SERVER_IP=$(get_server_ip)
     print_connection_info "$SERVER_IP"
-
     echo "🚀 启动 Hysteria2 服务器..."
-    "$BIN_PATH" server -c server.yaml &
-
-    echo "🔍 启动 Node.js 脚本检测 BBR..."
-    node check-bbr.js || echo "⚠️ Node.js 检测脚本未运行，请确认已安装 Node.js"
+    exec "$BIN_PATH" server -c server.yaml
 }
 
 main "$@"
+
+
