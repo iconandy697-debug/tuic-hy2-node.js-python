@@ -7,13 +7,13 @@ set -e
 
 # ---------- 默认配置 ----------
 HYSTERIA_VERSION="v2.6.5"
-DEFAULT_PORT=22222         # 自适应端口
+DEFAULT_PORT=22222         # 默认端口
 gen_pw() { openssl rand -base64 32 | head -c20; }
-AUTH_PASSWORD=$(gen_pw)   # 建议修改为复杂密码
+AUTH_PASSWORD=$(gen_pw)    # 自动生成随机密码
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
-SNI=" cloudflare.com"
-ALPN="h3,h2"
+SNI="cloudflare.com"       # 去掉前导空格
+ALPN_LIST=("h3" "h2")      # 使用数组存储 ALPN
 # ------------------------------
 
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -85,22 +85,20 @@ tls:
   cert: "$(pwd)/${CERT_FILE}"
   key: "$(pwd)/${KEY_FILE}"
   alpn:
-    - "${ALPN}"
+$(for a in "${ALPN_LIST[@]}"; do echo "    - $a"; done)
 auth:
   type: "password"
   password: "${AUTH_PASSWORD}"
-bandwidth:
-  up: "200mbps"
-  down: "200mbps"
+# 建议去掉带宽限制，让 Hysteria2 自适应
 quic:
   max_idle_timeout: "10s"
-  max_concurrent_streams: 4
-  initial_stream_receive_window: 65536
-  max_stream_receive_window: 131072
-  initial_conn_receive_window: 131072
-  max_conn_receive_window: 262144
+  max_concurrent_streams: 64
+  initial_stream_receive_window: 1m
+  max_stream_receive_window: 4m
+  initial_conn_receive_window: 4m
+  max_conn_receive_window: 16m
 EOF
-    echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=${ALPN}）。"
+    echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}）。"
 }
 
 # ---------- 获取服务器 IP ----------
@@ -119,15 +117,15 @@ print_connection_info() {
     echo "   🔌 端口: $SERVER_PORT"
     echo "   🔑 密码: $AUTH_PASSWORD"
     echo ""
-    echo "📱 节点链接（SNI=${SNI}, ALPN=${ALPN}, 跳过证书验证）:"
-    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#Hy2-Bing"
+    echo "📱 节点链接（SNI=${SNI}, ALPN=${ALPN_LIST[*]}, 跳过证书验证）:"
+    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN_LIST[*]}&insecure=1#Hy2-Bing"
     echo ""
-    echo "📄 客户端配置文件:"
+    echo "📄 客户端配置文件示例:"
     echo "server: ${IP}:${SERVER_PORT}"
     echo "auth: ${AUTH_PASSWORD}"
     echo "tls:"
     echo "  sni: ${SNI}"
-    echo "  alpn: [\"${ALPN}\"]"
+    echo "  alpn: [\"${ALPN_LIST[*]}\"]"
     echo "  insecure: true"
     echo "socks5:"
     echo "  listen: 127.0.0.1:1080"
@@ -148,5 +146,3 @@ main() {
 }
 
 main "$@"
-
-
