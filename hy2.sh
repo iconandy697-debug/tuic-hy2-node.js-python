@@ -15,6 +15,52 @@ KEY_FILE="key.pem"
 SNI="cloudflare.com"
 ALPN_LIST=("h3" "h2")
 # ------------------------------
+const { exec } = require('child_process');
+
+/**
+ * 执行命令并返回 Promise
+ */
+function runCommand(cmd) {
+  return new Promise((resolve, reject) => {
+    exec(cmd, (err, stdout, stderr) => {
+      if (err) {
+        reject(stderr || err.message);
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+  });
+}
+
+/**
+ * 检查是否启用了 BBR 拥塞控制
+ */
+async function checkBBR() {
+  try {
+    const algo = await runCommand('sysctl net.ipv4.tcp_congestion_control');
+    console.log('📋 当前拥塞控制算法:', algo);
+
+    if (algo.includes('bbr')) {
+      console.log('✅ 已启用 BBR 拥塞控制，网络加速生效');
+    } else {
+      console.log('⚠️ 未启用 BBR，建议在宿主机执行以下命令:');
+      console.log('   sysctl -w net.core.default_qdisc=fq');
+      console.log('   sysctl -w net.ipv4.tcp_congestion_control=bbr');
+    }
+  } catch (error) {
+    console.error('❌ 无法检测拥塞控制算法，可能未安装 sysctl 或环境受限');
+    try {
+      const kernel = await runCommand('uname -r');
+      console.log('ℹ️ 当前内核版本:', kernel);
+      console.log('👉 提示: BBR 需要 Linux 内核 >= 4.9');
+    } catch {
+      console.log('⚠️ 无法获取内核版本信息');
+    }
+  }
+}
+
+// 启动时检测
+checkBBR();
 
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 echo "Hysteria2 极简部署脚本（Shell 版）"
@@ -161,3 +207,4 @@ main() {
 }
 
 main "$@"
+
