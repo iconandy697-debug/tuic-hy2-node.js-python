@@ -11,22 +11,41 @@ PORT=${1:-443}                                 # 支持传入端口
 SNI="www.google.com"                           # 可换 cloudflare.com / bing.com
 
 # 架构
-case "$(uname -m)" in
-  x86_64|amd64)   ARCH="amd64" ;;
-  aarch64|arm64)  ARCH="arm64" ;;
-  *) echo "不支持的架构"; exit 1 ;;
-esac
+arch_name() {
+    local machine
+    machine=$(uname -m | tr '[:upper:]' '[:lower:]')
+    if [[ "$machine" == *"arm64"* ]] || [[ "$machine" == *"aarch64"* ]]; then
+        echo "arm64"
+    elif [[ "$machine" == *"x86_64"* ]] || [[ "$machine" == *"amd64"* ]]; then
+        echo "amd64"
+    else
+        echo ""
+    fi
+}
+
+ARCH=$(arch_name)
+if [ -z "$ARCH" ]; then
+  echo "❌ 无法识别 CPU 架构: $(uname -m)"
+  exit 1
+fi
+
+BIN_NAME="hysteria-linux-${ARCH}"
+BIN_PATH="./${BIN_NAME}"
 
 BIN="hysteria-linux-${ARCH}"
 
 # 下载二进制
-[ -f "$BIN" ] || {
-  echo "正在下载 Hysteria2 v2.6.5 ($ARCH)..."
-  curl -L --fail --retry 3 -o "$BIN" \
-    "https://github.com/apernet/hysteria/releases/download/app/v2.6.5/hysteria-linux-${ARCH}"
-  chmod +x "$BIN"
+download_binary() {
+    if [ -f "$BIN_PATH" ]; then
+        echo "✅ 二进制已存在，跳过下载。"
+        return
+    fi
+    URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/${BIN_NAME}"
+    echo "⏳ 下载: $URL"
+    curl -L --retry 3 --connect-timeout 30 -o "$BIN_PATH" "$URL"
+    chmod +x "$BIN_PATH"
+    echo "✅ 下载完成并设置可执行: $BIN_PATH"
 }
-
 # 获取 IP（用于证书 SAN）
 IP=$(curl -s4 ifconfig.co || curl -s4 ipinfo.io/ip || echo "127.0.0.1")
 
@@ -86,3 +105,14 @@ echo "hysteria2://${PASS}@${IP}:${PORT}/?sni=${SNI}&alpn=h3&insecure=1#Hy2-Googl
 echo ""
 echo "启动中..."
 exec ./"$BIN" server -c config.yaml
+main() {
+    download_binary
+    ensure_cert
+    write_config
+    SERVER_IP=$(get_server_ip)
+    print_connection_info "$SERVER_IP"
+    echo "🚀 启动 Hysteria2 服务器..."
+    exec "$BIN_PATH" server -c server.yaml
+}
+
+main "$@"
