@@ -11,7 +11,7 @@ SNI_LIST=("www.bing.com" "www.microsoft.com" "www.apple.com" "edge.microsoft.com
 SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
 
 # 随机常用备用端口（避开443）
-PORT_LIST=(8443 2053 2083 2087 2096 8880 2052 2095)
+PORT_LIST=(443 8443 2053 2083 2087 2096 8880 2052 2095)
 PORT=${PORT_LIST[$RANDOM % ${#PORT_LIST[@]}]}
 
 # 随机 25~90Mbps（显得像真实用户）
@@ -111,3 +111,4 @@ echo "  重新运行   : 再次执行本脚本即可"
 echo "======================================================"
 echo " 在 WispByte 上用这套配置，已经有上百人稳跑 6~15 个月零停机"
 echo " 放心当备用节点，速度虽然不高，但绝对活得久！"
+
