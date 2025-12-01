@@ -39,14 +39,28 @@ esac
 
 BIN="hysteria-linux-${ARCH}"
 
-# 下载最新版本（已存在则跳过）
-if [ ! -f "$BIN" ]; then
-    echo "正在下载 Hysteria2 最新版本 ($ARCH)..."
+# 最简洁可用的下载函数
+download_hysteria() {
+    local ARCH=$1
+    local BIN="hysteria-linux-${ARCH}"
+
+    echo "正在获取最新版本下载链接 ($ARCH)..."
     URL=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest \
-        | grep "browser_download_url.*linux-${ARCH}" \
-        | cut -d '"' -f 4)
+        | grep -o "https.*hysteria-linux-${ARCH}" | head -n1)
+
+    if [ -z "$URL" ]; then
+        echo "未找到下载链接，请检查架构: $ARCH"
+        exit 1
+    fi
+
+    echo "下载地址: $URL"
     curl -L --fail --retry 5 -o "$BIN" "$URL"
     chmod +x "$BIN"
+}
+
+# 下载（已存在则跳过）
+if [ ! -f "$BIN" ]; then
+    download_hysteria "$ARCH"
 fi
 
 # 自签证书（只生成一次）
@@ -154,8 +168,12 @@ fi
 
 echo "正在下载 Hysteria2 $LATEST_VERSION ($ARCH)..."
 URL=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest \
-    | grep "browser_download_url.*linux-${ARCH}" \
-    | cut -d '"' -f 4)
+    | grep -o "https.*hysteria-linux-${ARCH}" | head -n1)
+
+if [ -z "$URL" ]; then
+    echo "下载链接为空，请检查架构或版本"
+    exit 1
+fi
 
 curl -L --fail --retry 5 -o "$BIN.new" "$URL"
 chmod +x "$BIN.new"
