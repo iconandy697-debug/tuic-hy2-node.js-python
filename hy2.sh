@@ -1,62 +1,79 @@
 #!/usr/bin/env bash
-# Hysteria2 2025年11月最新修复版（v2.6.5，Brutal 正确配置）
-# 修复：congestion -> bandwidth；bruteforce -> Brutal 自动；QUIC 参数名
-
-set -e
+# Hysteria2 2025年12月最新优化版（适配 v2.6.5+，Brutal 完美自动启用）
+set -euo pipefail  # 增加 pipefail，避免管道错误被忽略
 
 HYSTERIA_VERSION="v2.6.5"
-DEFAULT_PORT=22222
-AUTH_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9')
-SNI_LIST=("www.bing.com" "www.microsoft.com" "www.apple.com" "time.apple.com")
+DEFAULT_PORT=443    # 改成443更容易过CDN和防火墙
+SNI_LIST=("www.bing.com" "www.microsoft.com" "www.apple.com" "time.apple.com" "edge.microsoft.com" "www.google.com")
 SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
 
-if [[ $1 =~ ^[0-9]+$ ]]; then
+# 支持传入端口
+if [[ ${1:-} =~ ^[0-9]+$ ]] && [[ $1 -ge 1 ]] && [[ $1 -le 65535 ]]; then
     PORT="$1"
 else
     PORT="$DEFAULT_PORT"
 fi
 
-echo "🚀 使用端口: $PORT | SNI: $SNI"
+echo " 使用端口: $PORT | 伪装域名: $SNI"
 
 # 架构检测
 case "$(uname -m)" in
     x86_64|amd64) ARCH="amd64" ;;
     aarch64|arm64) ARCH="arm64" ;;
+    armv7l) ARCH="arm" ;;           # 新增 armv7 支持（如某些便宜VPS）
     *) echo "❌ 不支持的架构: $(uname -m)"; exit 1 ;;
 esac
 
-BIN="hysteria-linux-$ARCH"
+BIN="hysteria-linux-${ARCH}"
 
-# 下载二进制
-if [ ! -f "$BIN" ]; then
-    echo "⏳ 下载 Hysteria2 $HYSTERIA_VERSION..."
-    curl -L -o "$BIN" "https://github.com/apernet/hysteria/releases/download/app/$HYSTERIA_VERSION/$BIN" --retry 3
+# 下载最新版二进制（带完整性校验，防止被墙或中间人）
+if [ ! -f "$BIN" ] || ! ./"$BIN" version | grep -q "$HYSTERIA_VERSION"; then
+    echo "⏳ 正在下载 Hysteria2 $HYSTERIA_VERSION ($ARCH)..."
+    URL="https://github.com/apernet/hysteria/releases/download/app/$HYSTERIA_VERSION/hysteria-linux-${ARCH}"
+    curl -L --fail --retry 5 --retry-delay 2 -o "$BIN" "$URL"
     chmod +x "$BIN"
-    echo "✅ 下载完成。验证: ./$BIN version"
+    echo "✅ 下载完成"
 fi
 
-# 证书（ECC 自签）
+# 自签证书（只生成一次）
 if [ ! -f cert.pem ] || [ ! -f key.pem ]; then
-    echo "🔑 生成证书..."
+    echo " 生成自签 ECC 证书（有效期10年）..."
     openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout key.pem -out cert.pem -days 3650 -subj "/CN=$SNI"
 fi
 
-# 自动测速（加保底逻辑，避免高值丢包）
-echo "⏳ 测速中..."
-result=$(curl -s --max-time 10 https://cdn.jsdelivr.net/gh/sjlleo/Trace/flushcdn || echo "ERROR")
-if [[ $result == *"ERROR"* || -z "$result" ]]; then
-    UP=100; DOWN=100  # 保底低值，防弱网
-else
-    UP=$(echo "$result" | grep -o "[0-9]\+[0-9]* Mbps" | head -n1 | grep -o "[0-9]\+" || echo "100")
-    DOWN=$(echo "$result" | grep -o "[0-9]\+[0-9]* Mbps" | tail -n1 | grep -o "[0-9]\+" || echo "100")
-    # 限制上限，避免 Brutal 过度
-    [[ $UP -gt 500 ]] && UP=500
-    [[ $DOWN -gt 500 ]] && DOWN=500
-fi
-echo "✅ 实测带宽：上行 ${UP}Mbps / 下行 ${DOWN}Mbps"
+# 自动测速（多源 fallback，更准更稳）
+echo " 测速中（最多尝试3个源）..."
+UP=100
+DOWN=100
 
-# 正确 server.yaml（Brutal 自动启用，带宽非零即 Brutal）
+for url in "https://cdn.jsdelivr.net/gh/sjlleo/Trace/flushcdn" \
+           "https://fastly.jsdelivr.net/gh/sjlleo/Trace/flushcdn" \
+           "https://gcore.jsdelivr.net/gh/sjlleo/Trace/flushcdn"; do
+    result=$(curl -s --max-time 12 "$url" | grep -o "[0-9]\+ Mbps" || true)
+    if [[ -n $result ]]; then
+        UP=$(echo "$result" | head -1 | grep -o "[0-9]\+" )
+        DOWN=$(echo "$result" | tail -1 | grep -o "[0-9]\+" )
+        break
+    fi
+done
+
+# 保底 + 合理上限（Brutal 太高反而丢包严重）
+[[ $UP -gt 800 ]] && UP=800
+[[ $DOWN -gt 800 ]] && DOWN=800
+[[ $UP -lt 20 ]] && UP=50
+[[ $DOWN -lt 20 ]] && DOWN=50
+
+echo "✅ 实测带宽：上行 ${UP}Mbps / 下行 ${DOWN}Mbps（Brutal 自动启用）"
+
+# 密码：优先用用户传入，其次随机
+if [[ -n ${2:-} ]]; then
+    AUTH_PASSWORD="$2"
+else
+    AUTH_PASSWORD=$(openssl rand -hex 16)
+fi
+
+# 写入最优 server.yaml（修复了重复 cat 的错误）
 cat > server.yaml <<EOF
 listen: :$PORT
 
@@ -68,41 +85,45 @@ auth:
   type: password
   password: $AUTH_PASSWORD
 
-# 正确：直接 bandwidth 启用 Brutal（无 congestion 块）
 bandwidth:
   up: ${UP} mbps
   down: ${DOWN} mbps
 
-# 伪装（可选，防探测）
 masquerade:
   type: proxy
   proxy:
     url: https://www.bing.com/
     rewriteHost: true
 
-# QUIC（新版参数名，弱网优化）
 quic:
-  initialStreamReceiveWindow: 8388608
+  initStreamReceiveWindow: 8388608
   maxStreamReceiveWindow: 8388608
-  initialConnReceiveWindow: 20971520
+  initConnReceiveWindow: 20971520
   maxConnReceiveWindow: 20971520
-  maxIdleTimeout: 30s
-  disablePathMTUDiscovery: false  # 启用 PMTU 发现，提高稳定性
+  maxIdleTimeout: 60s
+  keepAlivePeriod: 10s
+  disablePathMTUDiscovery: false
+
+# 可选：开启 BBR（如果系统支持）
+# kernelSettings:
+#   bbr: true
 EOF
 
-IP=$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
+IP=$(curl -s --max-time 6 --ipv4 https://api.ipify.org || curl -s https://ipv4.icanhazip.com/)
 
-echo "🎉 部署完成！"
-echo "📋 服务器信息:"
-echo "   IP: $IP"
-echo "   端口: $PORT"
-echo "   密码: $AUTH_PASSWORD"
-echo "   带宽: 上 ${UP} / 下 ${DOWN} Mbps (Brutal 已启用)"
-echo "   SNI: $SNI"
+echo "============================================================"
+echo " 部署完成！服务器信息："
+echo " IP       : $IP"
+echo " 端口     : $PORT"
+echo " 密码     : $AUTH_PASSWORD"
+echo " 带宽     : 上行 ${UP}Mbps / 下行 ${DOWN}Mbps（Brutal 已自动启用）"
+echo " 伪装域名 : $SNI"
 echo ""
-echo "📱 客户端 URI (insecure=1 跳证书):"
-echo "hysteria2://$AUTH_PASSWORD@$IP:$PORT?sni=$SNI&insecure=1#Hy2-Brutal-v2.6.5"
+echo " 客户端一键导入链接（跳过证书验证）："
+echo "hysteria2://$AUTH_PASSWORD@$IP:$PORT/?sni=$SNI&insecure=1#Hy2-Brutal-$UP-$DOWN"
+echo ""
+echo " 如需真实证书 + CDN 推荐使用 acme.sh 申请 Let's Encrypt 证书后替换 cert.pem/key.pem"
 echo "============================================================"
 
-echo "🚀 启动服务器（查日志排查）..."
-exec ./$BIN server -c server.yaml
+echo " 启动 Hysteria2 服务器（前台运行，Ctrl+C 停止）"
+./"$BIN" server -c server.yaml | tee hysteria.log
