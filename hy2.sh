@@ -7,7 +7,7 @@ set -e
 
 # ---------- 默认配置 ----------
 HYSTERIA_VERSION="v2.6.5"
-DEFAULT_PORT=9532
+DEFAULT_PORT=443
 AUTH_PASSWORD=$(openssl rand -hex 16)   # 自动生成复杂随机密码
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
@@ -150,4 +150,5 @@ main() {
 }
 
 main "$@"
+
 
