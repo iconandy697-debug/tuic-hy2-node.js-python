@@ -12,7 +12,7 @@ SNI_LIST=("www.bing.com" "www.microsoft.com" "www.apple.com" "edge.microsoft.com
 SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
 
 # WispByte 推荐端口（避开443，减少特征）
-PORT_LIST=(8443 2053 2083 2087 2096 8880 2052)
+PORT_LIST=(443 8443 2053 2083 2087 2096 8880 2052)
 PORT=${PORT_LIST[$RANDOM % ${#PORT_LIST[@]}]}
 
 # 随机 25~90Mbps 之间（显得更真实）
@@ -147,3 +147,4 @@ echo "   sudo systemctl [start|stop|restart|status] hysteria2-wispbyte"
 echo "======================================================"
 echo " 在 WispByte 上用这套配置，我已经稳跑 8 个月未被停机"
 echo " 放心开着当备用节点就行，速度虽然慢但绝对活得久！"
+
