@@ -1,175 +1,157 @@
 #!/usr/bin/env bash
-# Hysteria2 永不翻车版 — 专治测速失败 + 各种奇葩网络
-# Hysteria2 2025年11月修正版（v2.6.5，Brutal 正确配置）
-# 修复点：
-# - 下载地址去掉 app/
-# - 带宽单位改为 Mbps（大写）
-# - 证书生成更通用
-# - 测速逻辑更健壮
-# - QUIC 参数优化
-
+# WispByte 专用 Hysteria2 超稳低占用版（2025.12 更新）
+# 特点：35M 极限稳速 + 超低 CPU + 自动强密码 + 垃圾网络极稳 + 仅个人用
 set -e
 
-HYSTERIA_VERSION="v2.6.5"
-@@ -8,62 +15,54 @@ AUTH_PASSWORD=$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9')
-SNI_LIST=("www.bing.com" "www.microsoft.com" "www.apple.com" "time.apple.com")
-SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
+# ==================== 可自定义区 ====================
+DEFAULT_PORT=$(shuf -i 30000-60000 -n 1)  # 每次部署随机高位端口
+SNI="www.bing.com"                        # 改成 www.google.com 也行
+ALPN="h3"
+MAX_SPEED="35 mbps"                       # WispByte 最高安全速度，勿调高！
+# ===================================================
 
-[ -n "$1" ] && [ "$1" -eq "$1" ] 2>/dev/null && PORT="$1" || PORT="$DEFAULT_PORT"
-if [[ $1 =~ ^[0-9]+$ ]]; then
-    PORT="$1"
+GREEN="\033[0;32m"; RED="\033[0;31m"; YELLOW="\033[1;33m"; NC="\033[0m"
+log() { echo -e "${GREEN}[$(date +'%H:%M:%S')] $1${NC}"; }
+
+# 自动生成32位超强密码
+AUTH_PASSWORD=$(tr -dc A-Za-z0-9 < /dev/urandom | head -c 32)
+
+# 端口支持手动指定，否则随机
+if [[ -n "$1" && "$1" =~ ^[0-9]+$ ]]; then
+    SERVER_PORT="$1"
+    log "使用指定端口: $SERVER_PORT"
 else
-    PORT="$DEFAULT_PORT"
+    SERVER_PORT="$DEFAULT_PORT"
+    log "使用随机高位端口: $SERVER_PORT（更隐蔽）"
 fi
 
-echo "使用端口: $PORT | SNI: $SNI"
-echo "🚀 使用端口: $PORT | SNI: $SNI"
-
-# 架构
 # 架构检测
 case "$(uname -m)" in
-x86_64|amd64) ARCH="amd64" ;;
-aarch64|arm64) ARCH="arm64" ;;
-    *) echo "不支持的架构"; exit 1 ;;
-    *) echo "❌ 不支持的架构: $(uname -m)"; exit 1 ;;
+    x86_64|amd64) ARCH="amd64" ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    *) echo -e "${RED}不支持的架构$(uname -m)${NC}"; exit 1 ;;
 esac
 
 BIN="hysteria-linux-$ARCH"
+INSTALL_PATH="/usr/local/bin/hysteria2"
 
-# 下载
-[ ! -f "$BIN" ] && {
-    echo "下载 Hysteria2 $HYSTERIA_VERSION..."
-    curl -L -o "$BIN" "https://github.com/apernet/hysteria/releases/download/app/$HYSTERIA_VERSION/$BIN"
-# 下载二进制
-if [ ! -f "$BIN" ]; then
-    echo "⏳ 下载 Hysteria2 $HYSTERIA_VERSION..."
-    curl -L -o "$BIN" "https://github.com/apernet/hysteria/releases/download/$HYSTERIA_VERSION/$BIN" --retry 3
-chmod +x "$BIN"
-}
-
-# 证书
-[ ! -f cert.pem ] || [ ! -f key.pem ] && {
-    echo "生成自签证书..."
-    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -keyout key.pem -out cert.pem -days 3650 -subj "/CN=$SNI" >/dev/null 2>&1
-}
-
-# === 万能保底测速（连续尝试3个源，全部失败就强制用100Mbps）===
-UP=100
-DOWN=100
-
-echo "尝试测速（最多30秒）..."
-for url in \
-    "https://cdn.jsdelivr.net/gh/sjlleo/Trace/flushcdn" \
-    "https://speed.cloudflare.com/__down?bytes=100000000" \
-    "https://raw.githubusercontent.com/sjlleo/Trace/master/flushcdn"; do
-    
-    result=$(curl -s --max-time 12 "$url" 2>/dev/null || echo "ERROR")
-    if [[ "$result" != *"ERROR"* && -n "$result" ]]; then
-        UP=$(echo "$result" | grep -oE '[0-9]+ Mbps' | head -1 | grep -oE '[0-9]+' || echo 100)
-        DOWN=$(echo "$result" | grep -oE '[0-9]+ Mbps' | tail -1 | grep -oE '[0-9]+' || echo 100)
-        [[ -z "$UP" || "$UP" -lt 20 ]] && UP=100
-        [[ -z "$DOWN" || "$DOWN" -lt 20 ]] && DOWN=100
-        [[ "$UP" -gt 800 ]] && UP=800
-        [[ "$DOWN" -gt 800 ]] && DOWN=800
-        echo "测速成功 → 上行 ${UP}Mbps 下行 ${DOWN}Mbps"
-        break
-    fi
-done
-
-# 最终保险：如果还是空，就强制 100
-UP=${UP:-100}
-DOWN=${DOWN:-100}
-
-echo "最终使用带宽：上行 ${UP}Mbps 下行 ${DOWN}Mbps"
-
-# === 永远有效的配置（已实测千台机器）===
-    echo "✅ 下载完成。验证: ./$BIN version"
-fi
-
-# 证书（ECC 自签）
-if [ ! -f cert.pem ] || [ ! -f key.pem ]; then
-    echo "🔑 生成证书..."
-    openssl ecparam -genkey -name prime256v1 -noout -out key.pem
-    openssl req -new -x509 -key key.pem -out cert.pem -days 3650 -subj "/CN=$SNI"
-fi
-
-# 自动测速（加保底逻辑，避免高值丢包）
-echo "⏳ 测速中..."
-result=$(curl -s --max-time 10 https://cdn.jsdelivr.net/gh/sjlleo/Trace/flushcdn || echo "ERROR")
-if [[ $result == *"ERROR"* || -z "$result" ]]; then
-    UP=100; DOWN=100  # 保底低值
+# 下载最新稳定二进制
+if [ ! -f "$INSTALL_PATH" ] || ! "$INSTALL_PATH" version 2>/dev/null | grep -q "v2.6"; then
+    log "正在下载 Hysteria2 极简低占用版..."
+    curl -L -o /tmp/hy2 "https://github.com/apernet/hysteria/releases/download/app/v2.6.5/$BIN"
+    chmod +x /tmp/hy2
+    mv -f /tmp/hy2 "$INSTALL_PATH" 2>/dev/null || cp /tmp/hy2 "$HOME/hysteria2"
+    HY_PATH=$(which hysteria2 || echo "$HOME/hysteria2")
 else
-    UP=$(echo "$result" | grep -o "[0-9]\+ Mbps" | head -n1 | grep -o "[0-9]\+" || echo "100")
-    DOWN=$(echo "$result" | grep -o "[0-9]\+ Mbps" | tail -n1 | grep -o "[0-9]\+" || echo "100")
-    [[ -z "$UP" ]] && UP=100
-    [[ -z "$DOWN" ]] && DOWN=100
-    [[ $UP -gt 500 ]] && UP=500
-    [[ $DOWN -gt 500 ]] && DOWN=500
+    HY_PATH="$INSTALL_PATH"
 fi
-echo "✅ 实测带宽：上行 ${UP}Mbps / 下行 ${DOWN}Mbps"
 
-# 正确 server.yaml（Brutal 自动启用）
-cat > server.yaml <<EOF
-listen: :$PORT
+# 生成自签证书（放家目录，权限最小）
+mkdir -p "$HOME/.hy2"
+if [ ! -f "$HOME/.hy2/cert.pem" ]; then
+    log "生成自签证书（10年有效）..."
+    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout "$HOME/.hy2/key.pem" -out "$HOME/.hy2/cert.pem" \
+        -subj "/CN=$SNI" -days 3650 >/dev/null 2>&1
+    chmod 600 "$HOME/.hy2/key.pem"
+fi
 
-@@ -76,35 +75,36 @@ auth:
- password: $AUTH_PASSWORD
+# 写入极致省 CPU + 垃圾网络最稳配置
+cat > "$HOME/hy2-config.yaml" <<EOF
+listen: :$SERVER_PORT
+
+tls:
+  cert: $HOME/.hy2/cert.pem
+  key: $HOME/.hy2/key.pem
+
+auth:
+  type: password
+  password: $AUTH_PASSWORD
 
 bandwidth:
-  up: ${UP} mbps
-  down: ${DOWN} mbps
-  up: ${UP} Mbps
-  down: ${DOWN} Mbps
+  up: $MAX_SPEED
+  down: $MAX_SPEED
 
 masquerade:
-  type: string
-  content: "404 Not Found\n\nHysteria2 Server"
-  statusCode: 404
   type: proxy
   proxy:
-    url: https://www.bing.com/
+    url: https://bing.com
     rewriteHost: true
 
 quic:
-  initialStreamReceiveWindow: 4194304
-  initialStreamReceiveWindow: 8388608
- maxStreamReceiveWindow: 8388608
-  initialConnReceiveWindow: 8388608
-  initialConnReceiveWindow: 20971520
- maxConnReceiveWindow: 20971520
+  initStreamReceiveWindow: 2097152      # 大幅降低 CPU
+  maxStreamReceiveWindow: 2097152
+  initConnReceiveWindow: 5242880
+  maxConnReceiveWindow: 5242880
   maxIdleTimeout: 30s
-  disablePathMTUDiscovery: false
+  congestionControl: bbr               # 垃圾网络最稳算法
 
-ignoreClientBandwidth: true
-  maxIdleTimeout: 60s
+fastOpen: false                        # 关闭 fast-open 降低 CPU
+disableMTUDiscovery: true              # 防止某些垃圾网络 MTU 探测卡死
+
+log:
+  level: warn                           # 关闭 debug 日志，省 CPU
 EOF
 
-IP=$(curl -s --max-time 5 https://api.ipify.org || echo "未知IP")
+# 创建 systemd 服务（后台 + 自动重启）
+cat > /tmp/hysteria2.service <<EOF
+[Unit]
+Description=Hysteria2 Personal Node (WispByte UltraStable)
+After=network.target
 
-echo "===================================================="
-echo "部署完成！服务器马上就能连"
-echo "IP: $IP"
-echo "端口: $PORT"
-echo "密码: $AUTH_PASSWORD"
-echo "SNI: $SNI"
-echo "客户端链接（自签证书一定要加 insecure=1）:"
-echo "hysteria2://$AUTH_PASSWORD@$IP:$PORT?sni=$SNI&insecure=1#Hy2-永不翻车版"
-echo "===================================================="
+[Service]
+Type=simple
+ExecStart=$HY_PATH server -c $HOME/hy2-config.yaml
+Restart=always
+RestartSec=2
+LimitNOFILE=4096
+Environment="HYPHEN_INSENSITIVE=1"
 
-IP=$(curl -s --max-time 5 https://api.ipify.org || echo "YOUR_IP")
+[Install]
+WantedBy=multi-user.target
+EOF
 
-echo "🎉 部署完成！"
-echo "📋 服务器信息:"
-echo "   IP: $IP"
-echo "   端口: $PORT"
-echo "   密码: $AUTH_PASSWORD"
-echo "   带宽: 上 ${UP} / 下 ${DOWN} Mbps (Brutal 已启用)"
-echo "   SNI: $SNI"
-echo ""
-echo "📱 客户端 URI (insecure=1 跳证书):"
-echo "hysteria2://$AUTH_PASSWORD@$IP:$PORT?sni=$SNI&insecure=1#Hy2-Brutal-v2.6.5"
-echo "============================================================"
+# 尝试用 root 安装服务，没 root 就用用户级（WispByte 通常有 sudo）
+if command -v sudo >/dev/null 2>&1; then
+    sudo cp /tmp/hysteria2.service /etc/systemd/system/hysteria2.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now hysteria2 >/dev/null 2>&1 && SERVICE_OK=1
+else
+    mkdir -p ~/.config/systemd/user
+    cp /tmp/hysteria2.service ~/.config/systemd/user/hysteria2.service
+    systemctl --user daemon-reload
+    systemctl --user enable --now hysteria2 >/dev/null 2>&1 && SERVICE_OK=1
+fi
 
-echo "🚀 启动服务器（查日志排查）..."
-exec ./$BIN server -c server.yaml
+# 获取公网 IP
+IP=$(curl -s4 --max-time 10 ifconfig.co || curl -s6 --max-time 10 ifconfig.co || echo "YOUR_IP")
+
+# 最终输出
+clear
+echo -e "${GREEN}════════════════════════════════════════════════${NC}"
+echo -e "${YELLOW}      WispByte Hysteria2 部署成功！（个人专用）      ${NC}"
+echo -e "${GREEN}════════════════════════════════════════════════${NC}"
+echo
+echo -e " ${YELLOW}服务器信息${NC}"
+echo -e "   IP     : $IP"
+echo -e "   端口   : $SERVER_PORT (UDP)"
+echo -e "   密码   : $AUTH_PASSWORD"
+echo -e "   SNI    : $SNI"
+echo
+echo -e " ${YELLOW}推荐节点链接（直接导入 Clash/NekoBox/Sing-box）${NC}"
+echo -e " hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#WispByte-Hy2-${SERVER_PORT}"
+echo
+echo -e " ${YELLOW}管理命令${NC}"
+echo -e "   重启   : systemctl restart hysteria2    （或 systemctl --user restart hysteria2）"
+echo -e "   查看日志: journalctl -f -u hysteria2     （或 journalctl --user -f -u hysteria2）"
+echo
+echo -e "${GREEN}已全局限速 35Mbps + 超低CPU占用 + BBR抗丢包，长期稳跑无压力！${NC}"
+echo
+
+# 启动
+if [ "$SERVICE_OK" = "1" ]; then
+    sleep 3
+    if systemctl is-active --quiet hysteria2 2>/dev/null || systemctl --user is-active --quiet hysteria2; then
+        echo -e "${GREEN}Hysteria2 正在运行，可长期自用！${NC}"
+    fi
+fi
