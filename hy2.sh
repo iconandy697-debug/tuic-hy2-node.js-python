@@ -13,8 +13,8 @@ KEY_FILE="key.pem"
 SNI="www.bing.com"
 
 # 默认带宽（可通过环境变量覆盖）
-UP_BW="${UP_BW:-200mbps}"
-DOWN_BW="${DOWN_BW:-200mbps}"
+UP_BW="${UP_BW:-20mbps}"
+DOWN_BW="${DOWN_BW:-20mbps}"
 
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 echo "Hysteria2 优化部署脚本（Shell 版，禁用IPv6 + 优化QUIC）"
@@ -184,5 +184,6 @@ main() {
 }
 
 main "$@"
+
 
 
