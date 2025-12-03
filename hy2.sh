@@ -101,12 +101,14 @@ tls:
     - "h3"
     - "h2"
     - "http/1.1"
+  insecure: true
+  prefer_ipv4: true
 auth:
   type: "password"
   password: "${AUTH_PASSWORD}"
 bandwidth:
-  up: "${UP_BW}"
-  down: "${DOWN_BW}"
+  up: "20mbps"
+  down: "20mbps"
 quic:
   max_idle_timeout: "20s"
   max_concurrent_streams: 8
@@ -182,3 +184,4 @@ main() {
 }
 
 main "$@"
+
