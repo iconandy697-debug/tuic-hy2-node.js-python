@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # -*- coding: utf-8 -*-
-# Hysteria2 极简部署脚本（稳态与低占用优化版 + 守护进程）
-# 适用于超低内存环境（32-64MB），自动密码、CPU保护、差网稳态、后台守护
+# Hysteria2 优化部署脚本（稳态 + 可调带宽 + 多 ALPN + 守护进程 + 禁用IPv6 + 优化QUIC）
+# 适用于低内存环境（32-64MB），支持参数化配置
 
 set -euo pipefail
 
@@ -11,15 +11,18 @@ DEFAULT_PORT=22222
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
 SNI="www.bing.com"
-ALPN="h3"
+
+# 默认带宽（可通过环境变量覆盖）
+UP_BW="${UP_BW:-200mbps}"
+DOWN_BW="${DOWN_BW:-200mbps}"
 
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-echo "Hysteria2 稳态优化部署脚本（Shell 版）"
-echo "支持命令行端口参数，如：bash hy2.sh 443"
+echo "Hysteria2 优化部署脚本（Shell 版，禁用IPv6 + 优化QUIC）"
+echo "支持命令行端口参数，如：bash new2.sh 443"
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 
 # ---------- 获取端口 ----------
-if [[ $# -ge 1 && -n "${1:-}" ]]; then
+if [ $# -ge 1 ] && [ -n "$1" ]; then
     SERVER_PORT="$1"
     echo "✅ 使用命令行指定端口: $SERVER_PORT"
 else
@@ -54,8 +57,7 @@ ensure_password() {
         AUTH_PASSWORD="$(cat .hy2_pass)"
         echo "✅ 读取已有强密码。"
     else
-        base=$(openssl rand -base64 32 | tr -d '/+=\n' | head -c 32)
-        AUTH_PASSWORD="$(printf "%s" "$base" | openssl dgst -sha256 | awk '{print $2}' | head -c 32)"
+        AUTH_PASSWORD="$(openssl rand -hex 32 | head -c 32)"
         echo "$AUTH_PASSWORD" > .hy2_pass
         chmod 600 .hy2_pass
         echo "🔐 已生成强密码并写入 .hy2_pass"
@@ -96,23 +98,28 @@ tls:
   cert: "$(pwd)/${CERT_FILE}"
   key: "$(pwd)/${KEY_FILE}"
   alpn:
-    - "${ALPN}"
+    - "h3"
+    - "h2"
+    - "http/1.1"
 auth:
   type: "password"
   password: "${AUTH_PASSWORD}"
 bandwidth:
-  up: "60mbps"
-  down: "60mbps"
+  up: "${UP_BW}"
+  down: "${DOWN_BW}"
 quic:
   max_idle_timeout: "20s"
-  max_concurrent_streams: 2
-  initial_stream_receive_window: 32768
-  max_stream_receive_window: 65536
-  initial_conn_receive_window: 65536
-  max_conn_receive_window: 131072
+  max_concurrent_streams: 8
+  initial_stream_receive_window: 65536
+  max_stream_receive_window: 131072
+  initial_conn_receive_window: 131072
+  max_conn_receive_window: 262144
   keepalive_period: "7s"
+  disable_path_mtu_discovery: true   # 禁用 MTU 探测
+  disable_ipv6: true                 # 禁用 IPv6
+prefer_ipv4: true                     # 强制优先 IPv4
 EOF
-    echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=${ALPN}）。"
+    echo "✅ 写入优化配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=h3/h2/http1.1，带宽=${UP_BW}/${DOWN_BW}，禁用IPv6）。"
 }
 
 # ---------- 获取服务器 IP ----------
@@ -124,7 +131,7 @@ get_server_ip() {
 # ---------- 打印连接信息 ----------
 print_connection_info() {
     local IP="$1"
-    echo "🎉 Hysteria2 部署成功！（稳态优化版）"
+    echo "🎉 Hysteria2 部署成功！（优化版，禁用IPv6）"
     echo "=========================================================================="
     echo "📋 服务器信息:"
     echo "   🌐 IP地址: $IP"
@@ -132,15 +139,16 @@ print_connection_info() {
     echo "   🔑 密码: $AUTH_PASSWORD"
     echo ""
     echo "📱 节点链接（仅供个人使用）:"
-    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#Hy2-Private"
+    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=h3&insecure=1#Hy2-Private"
     echo ""
     echo "📄 客户端配置文件示例:"
     echo "server: ${IP}:${SERVER_PORT}"
     echo "auth: ${AUTH_PASSWORD}"
     echo "tls:"
     echo "  sni: ${SNI}"
-    echo "  alpn: [\"${ALPN}\"]"
+    echo "  alpn: [\"h3\",\"h2\",\"http/1.1\"]"
     echo "  insecure: true"
+    echo "prefer_ipv4: true"
     echo "socks5:"
     echo "  listen: 127.0.0.1:1080"
     echo "http:"
