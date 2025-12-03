@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # -*- coding: utf-8 -*-
-# Hysteria2 优化部署脚本（带宽可调 + 多 ALPN + IPv4 优先 + Let’s Encrypt fallback）
-# 适用于低内存环境，支持参数化配置
+# Hysteria2 优化部署脚本（带宽可调 + 多 ALPN + IPv4 优先 + 自签证书支持）
+# 适用于无 root 权限环境，证书生成在当前目录
 
 set -euo pipefail
 
 # ---------- 基础配置 ----------
 HYSTERIA_VERSION="v2.6.5"
 DEFAULT_PORT=22222
-CERT_FILE="/etc/hysteria2/cert.pem"
-KEY_FILE="/etc/hysteria2/key.pem"
-SNI="hy2.iconandy.dpdns.org"   # ⚠️ 请替换为你解析到服务器的真实域名
+CERT_FILE="./cert.pem"
+KEY_FILE="./key.pem"
+SNI="hy。iconandy.dpdns.org"   # ⚠️ 请替换为你解析到服务器的真实域名
 
 UP_BW="${UP_BW:-200mbps}"
 DOWN_BW="${DOWN_BW:-200mbps}"
@@ -77,39 +77,16 @@ download_binary() {
 }
 
 # ---------- 自签证书生成 ----------
-generate_self_signed_cert() {
-    echo "🔑 使用 openssl 生成自签证书（prime256v1）..."
-    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
-    chmod 600 "$KEY_FILE"
-    echo "✅ 自签证书生成成功（客户端需配置 insecure:true）。"
-}
-
-# ---------- 申请证书 ----------
 ensure_cert() {
     if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
         echo "✅ 已存在证书，使用现有 cert/key。"
         return
     fi
-
-    if [ "$(id -u)" -eq 0 ]; then
-        if command -v certbot >/dev/null 2>&1; then
-            echo "🔑 使用 certbot 自动申请 Let’s Encrypt 证书..."
-            certbot certonly --standalone -d "${SNI}" --agree-tos -m admin@"${SNI}" --non-interactive || {
-                echo "⚠️ certbot 申请失败，回退到自签证书。"
-                generate_self_signed_cert
-            }
-            ln -sf "/etc/letsencrypt/live/${SNI}/fullchain.pem" "$CERT_FILE"
-            ln -sf "/etc/letsencrypt/live/${SNI}/privkey.pem" "$KEY_FILE"
-            echo "✅ 已申请并配置 Let’s Encrypt 证书。"
-        else
-            echo "⚠️ 未检测到 certbot，回退到自签证书。"
-            generate_self_signed_cert
-        fi
-    else
-        echo "⚠️ 当前非 root 用户，无法安装 certbot，回退到自签证书。"
-        generate_self_signed_cert
-    fi
+    echo "🔑 使用 openssl 生成自签证书（prime256v1）..."
+    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
+    chmod 600 "$KEY_FILE"
+    echo "✅ 自签证书生成成功（客户端需配置 insecure:true）。"
 }
 
 # ---------- 写配置文件 ----------
@@ -140,7 +117,7 @@ quic:
 prefer_ipv4: true
 log:
   level: info
-  file: "/var/log/hysteria2.log"
+  file: "./hysteria2.log"
 EOF
     echo "✅ 写入优化配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, 带宽=${UP_BW}/${DOWN_BW}）。"
 }
@@ -154,7 +131,7 @@ get_server_ip() {
 # ---------- 打印连接信息 ----------
 print_connection_info() {
     local IP="$1"
-    echo "🎉 Hysteria2 部署成功！（最终优化版）"
+    echo "🎉 Hysteria2 部署成功！（无 root 优化版）"
     echo "=========================================================================="
     echo "📋 服务器信息:"
     echo "   🌐 IP地址: $IP"
@@ -162,7 +139,7 @@ print_connection_info() {
     echo "   🔑 密码: $AUTH_PASSWORD"
     echo ""
     echo "📱 节点链接（仅供个人使用）:"
-    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=h3&insecure=0#Hy2-Private"
+    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=h3&insecure=1#Hy2-Private"
     echo ""
     echo "📄 客户端配置文件示例:"
     echo "server: ${IP}:${SERVER_PORT}"
@@ -170,7 +147,7 @@ print_connection_info() {
     echo "tls:"
     echo "  sni: ${SNI}"
     echo "  alpn: [\"h3\",\"h2\",\"http/1.1\"]"
-    echo "  insecure: false"
+    echo "  insecure: true"
     echo "socks5:"
     echo "  listen: 127.0.0.1:1080"
     echo "http:"
@@ -182,9 +159,9 @@ print_connection_info() {
 daemon_run() {
     echo "🛡️ 启动守护模式：后台运行并自动重启"
     while true; do
-        nohup "$BIN_PATH" server -c server.yaml >> /var/log/hy2.log 2>&1 &
+        nohup "$BIN_PATH" server -c server.yaml >> ./hy2.log 2>&1 &
         PID=$!
-        echo "🚀 Hysteria2 已启动 (PID=$PID)，日志写入 /var/log/hy2.log"
+        echo "🚀 Hysteria2 已启动 (PID=$PID)，日志写入 ./hy2.log"
         wait $PID
         EXIT_CODE=$?
         echo "⚠️ 进程退出 (code=$EXIT_CODE)，5 秒后重启..."
