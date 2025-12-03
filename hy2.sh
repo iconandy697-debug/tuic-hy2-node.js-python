@@ -10,7 +10,7 @@ HYSTERIA_VERSION="v2.6.5"
 DEFAULT_PORT=22222
 CERT_FILE="./cert.pem"
 KEY_FILE="./key.pem"
-SNI="hy.iconandy.dpdns.org"   # ⚠️ 请替换为你解析到服务器的真实域名
+SNI="hy2.iconandy.dpdns.org"   # ⚠️ 请替换为你解析到服务器的真实域名
 
 UP_BW="${UP_BW:-200mbps}"
 DOWN_BW="${DOWN_BW:-200mbps}"
@@ -181,4 +181,5 @@ main() {
 }
 
 main "$@"
+
 
