@@ -119,7 +119,7 @@ quic:
   keepalive_period: "15s"              # 减少心跳频率，降低 CPU 唤醒
   disable_path_mtu_discovery: true     # 禁用 MTU 探测，避免分片问题
   disable_ipv6: true                   # 禁用 IPv6，避免 network unreachable 错误
-prefer_ipv4: true                  # 强制优先 IPv4
+  prefer_ipv4: true                  # 强制优先 IPv4
 EOF
     echo "✅ 写入优化配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=h3/h2/http1.1，带宽=${UP_BW}/${DOWN_BW}，禁用IPv6）。"
 }
@@ -184,6 +184,7 @@ main() {
 }
 
 main "$@"
+
 
 
 
