@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # -*- coding: utf-8 -*-
-# Hysteria2 优化部署脚本（稳态 + 可调带宽 + 多 ALPN + 守护进程）
+# Hysteria2 优化部署脚本（稳态 + 可调带宽 + 多 ALPN + 守护进程 + Let’s Encrypt）
 # 适用于低内存环境（32-64MB），支持参数化配置
 
 set -euo pipefail
@@ -8,9 +8,9 @@ set -euo pipefail
 # ---------- 基础配置 ----------
 HYSTERIA_VERSION="v2.6.5"
 DEFAULT_PORT=22222
-CERT_FILE="cert.pem"
-KEY_FILE="key.pem"
-SNI="www.bing.com"
+CERT_FILE="/etc/hysteria2/cert.pem"
+KEY_FILE="/etc/hysteria2/key.pem"
+SNI="yourdomain.com"   # ⚠️ 请替换为你实际绑定的域名（必须解析到服务器）
 
 # 默认带宽（可通过环境变量覆盖）
 UP_BW="${UP_BW:-200mbps}"
@@ -77,17 +77,18 @@ download_binary() {
     echo "✅ 下载完成并设置可执行: $BIN_PATH"
 }
 
-# ---------- 生成证书 ----------
+# ---------- 申请 Let’s Encrypt 证书 ----------
 ensure_cert() {
     if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
-        echo "✅ 发现证书，使用现有 cert/key。"
+        echo "✅ 已存在有效证书，使用现有 cert/key。"
         return
     fi
-    echo "🔑 未发现证书，使用 openssl 生成自签证书（prime256v1）..."
-    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
-    chmod 600 "$KEY_FILE"
-    echo "✅ 证书生成成功。"
+    echo "🔑 未发现证书，使用 certbot 自动申请 Let’s Encrypt 证书..."
+    apt-get update && apt-get install -y certbot
+    certbot certonly --standalone -d "${SNI}" --agree-tos -m admin@"${SNI}" --non-interactive
+    ln -sf "/etc/letsencrypt/live/${SNI}/fullchain.pem" "$CERT_FILE"
+    ln -sf "/etc/letsencrypt/live/${SNI}/privkey.pem" "$KEY_FILE"
+    echo "✅ 已申请并配置 Let’s Encrypt 证书。"
 }
 
 # ---------- 写配置文件 ----------
@@ -95,8 +96,8 @@ write_config() {
 cat > server.yaml <<EOF
 listen: ":${SERVER_PORT}"
 tls:
-  cert: "$(pwd)/${CERT_FILE}"
-  key: "$(pwd)/${KEY_FILE}"
+  cert: "${CERT_FILE}"
+  key: "${KEY_FILE}"
   alpn:
     - "h3"
     - "h2"
@@ -115,8 +116,12 @@ quic:
   initial_conn_receive_window: 131072
   max_conn_receive_window: 262144
   keepalive_period: "7s"
+prefer_ipv4: true
+log:
+  level: info
+  file: "/var/log/hysteria2.log"
 EOF
-    echo "✅ 写入优化配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=h3/h2/http1.1，带宽=${UP_BW}/${DOWN_BW}）。"
+    echo "✅ 写入优化配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, 带宽=${UP_BW}/${DOWN_BW}）。"
 }
 
 # ---------- 获取服务器 IP ----------
@@ -128,7 +133,7 @@ get_server_ip() {
 # ---------- 打印连接信息 ----------
 print_connection_info() {
     local IP="$1"
-    echo "🎉 Hysteria2 部署成功！（优化版）"
+    echo "🎉 Hysteria2 部署成功！（最终优化版）"
     echo "=========================================================================="
     echo "📋 服务器信息:"
     echo "   🌐 IP地址: $IP"
@@ -136,7 +141,7 @@ print_connection_info() {
     echo "   🔑 密码: $AUTH_PASSWORD"
     echo ""
     echo "📱 节点链接（仅供个人使用）:"
-    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=h3&insecure=1#Hy2-Private"
+    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=h3&insecure=0#Hy2-Private"
     echo ""
     echo "📄 客户端配置文件示例:"
     echo "server: ${IP}:${SERVER_PORT}"
@@ -144,7 +149,7 @@ print_connection_info() {
     echo "tls:"
     echo "  sni: ${SNI}"
     echo "  alpn: [\"h3\",\"h2\",\"http/1.1\"]"
-    echo "  insecure: true"
+    echo "  insecure: false"
     echo "socks5:"
     echo "  listen: 127.0.0.1:1080"
     echo "http:"
@@ -156,9 +161,9 @@ print_connection_info() {
 daemon_run() {
     echo "🛡️ 启动守护模式：后台运行并自动重启"
     while true; do
-        nohup "$BIN_PATH" server -c server.yaml >> hy2.log 2>&1 &
+        nohup "$BIN_PATH" server -c server.yaml >> /var/log/hy2.log 2>&1 &
         PID=$!
-        echo "🚀 Hysteria2 已启动 (PID=$PID)，日志写入 hy2.log"
+        echo "🚀 Hysteria2 已启动 (PID=$PID)，日志写入 /var/log/hy2.log"
         wait $PID
         EXIT_CODE=$?
         echo "⚠️ 进程退出 (code=$EXIT_CODE)，5 秒后重启..."
