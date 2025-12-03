@@ -13,8 +13,8 @@ KEY_FILE="key.pem"
 SNI="www.bing.com"
 
 # 默认带宽（可通过环境变量覆盖）
-UP_BW="${UP_BW:-20mbps}"
-DOWN_BW="${DOWN_BW:-20mbps}"
+UP_BW=20mbps
+DOWN_BW=20mbps
 
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 echo "Hysteria2 优化部署脚本（Shell 版，禁用IPv6 + 优化QUIC）"
@@ -99,9 +99,8 @@ tls:
   key: "$(pwd)/${KEY_FILE}"
   alpn:
     - "h3"
-    - "h2"
-    - "http/1.1"
-  insecure: true
+   
+  insecure: false
   prefer_ipv4: true
 auth:
   type: "password"
@@ -111,12 +110,12 @@ bandwidth:
   down: "20mbps"
 quic:
   max_idle_timeout: "30s"              # 延长空闲超时，减少频繁清理
-  max_concurrent_streams: 4            # 降低并发流数量，减轻调度压力
+  max_concurrent_streams: 1            # 降低并发流数量，减轻调度压力
   initial_stream_receive_window: 32768 # 缩小窗口，降低内存/CPU压力
   max_stream_receive_window: 65536
   initial_conn_receive_window: 65536
   max_conn_receive_window: 131072
-  keepalive_period: "15s"              # 减少心跳频率，降低 CPU 唤醒
+  keepalive_period: "60s"              # 减少心跳频率，降低 CPU 唤醒
   disable_path_mtu_discovery: true     # 禁用 MTU 探测，避免分片问题
   disable_ipv6: true                   # 禁用 IPv6，避免 network unreachable 错误
   prefer_ipv4: true                  # 强制优先 IPv4
@@ -184,6 +183,7 @@ main() {
 }
 
 main "$@"
+
 
 
 
