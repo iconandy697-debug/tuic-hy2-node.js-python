@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # -*- coding: utf-8 -*-
-# Hysteria2 优化部署脚本（稳态 + 可调带宽 + 多 ALPN + 守护进程 + Let’s Encrypt）
-# 适用于低内存环境（32-64MB），支持参数化配置
+# Hysteria2 优化部署脚本（带宽可调 + 多 ALPN + IPv4 优先 + Let’s Encrypt fallback）
+# 适用于低内存环境，支持参数化配置
 
 set -euo pipefail
 
@@ -10,9 +10,8 @@ HYSTERIA_VERSION="v2.6.5"
 DEFAULT_PORT=22222
 CERT_FILE="/etc/hysteria2/cert.pem"
 KEY_FILE="/etc/hysteria2/key.pem"
-SNI="hy2.iconandy.dpdns.org"   # ⚠️ 请替换为你实际绑定的域名（必须解析到服务器）
+SNI="hy2.iconandy.dpdns.org"   # ⚠️ 请替换为你解析到服务器的真实域名
 
-# 默认带宽（可通过环境变量覆盖）
 UP_BW="${UP_BW:-200mbps}"
 DOWN_BW="${DOWN_BW:-200mbps}"
 
@@ -77,18 +76,40 @@ download_binary() {
     echo "✅ 下载完成并设置可执行: $BIN_PATH"
 }
 
-# ---------- 申请 Let’s Encrypt 证书 ----------
+# ---------- 自签证书生成 ----------
+generate_self_signed_cert() {
+    echo "🔑 使用 openssl 生成自签证书（prime256v1）..."
+    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
+    chmod 600 "$KEY_FILE"
+    echo "✅ 自签证书生成成功（客户端需配置 insecure:true）。"
+}
+
+# ---------- 申请证书 ----------
 ensure_cert() {
     if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
-        echo "✅ 已存在有效证书，使用现有 cert/key。"
+        echo "✅ 已存在证书，使用现有 cert/key。"
         return
     fi
-    echo "🔑 未发现证书，使用 certbot 自动申请 Let’s Encrypt 证书..."
-    apt-get update && apt-get install -y certbot
-    certbot certonly --standalone -d "${SNI}" --agree-tos -m admin@"${SNI}" --non-interactive
-    ln -sf "/etc/letsencrypt/live/${SNI}/fullchain.pem" "$CERT_FILE"
-    ln -sf "/etc/letsencrypt/live/${SNI}/privkey.pem" "$KEY_FILE"
-    echo "✅ 已申请并配置 Let’s Encrypt 证书。"
+
+    if [ "$(id -u)" -eq 0 ]; then
+        if command -v certbot >/dev/null 2>&1; then
+            echo "🔑 使用 certbot 自动申请 Let’s Encrypt 证书..."
+            certbot certonly --standalone -d "${SNI}" --agree-tos -m admin@"${SNI}" --non-interactive || {
+                echo "⚠️ certbot 申请失败，回退到自签证书。"
+                generate_self_signed_cert
+            }
+            ln -sf "/etc/letsencrypt/live/${SNI}/fullchain.pem" "$CERT_FILE"
+            ln -sf "/etc/letsencrypt/live/${SNI}/privkey.pem" "$KEY_FILE"
+            echo "✅ 已申请并配置 Let’s Encrypt 证书。"
+        else
+            echo "⚠️ 未检测到 certbot，回退到自签证书。"
+            generate_self_signed_cert
+        fi
+    else
+        echo "⚠️ 当前非 root 用户，无法安装 certbot，回退到自签证书。"
+        generate_self_signed_cert
+    fi
 }
 
 # ---------- 写配置文件 ----------
@@ -183,4 +204,3 @@ main() {
 }
 
 main "$@"
-
