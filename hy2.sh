@@ -100,6 +100,7 @@ tls:
     - "h3"
     - "h2"
     - "http/1.1"
+prefer_ipv4: true
 auth:
   type: "password"
   password: "${AUTH_PASSWORD}"
@@ -181,5 +182,6 @@ main() {
 }
 
 main "$@"
+
 
 
