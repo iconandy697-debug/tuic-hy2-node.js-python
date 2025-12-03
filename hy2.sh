@@ -110,16 +110,16 @@ bandwidth:
   up: "20mbps"
   down: "20mbps"
 quic:
-  max_idle_timeout: "20s"
-  max_concurrent_streams: 8
-  initial_stream_receive_window: 65536
-  max_stream_receive_window: 131072
-  initial_conn_receive_window: 131072
-  max_conn_receive_window: 262144
-  keepalive_period: "7s"
-  disable_path_mtu_discovery: true   # 禁用 MTU 探测
-  disable_ipv6: true                 # 禁用 IPv6
-prefer_ipv4: true                     # 强制优先 IPv4
+  max_idle_timeout: "30s"              # 延长空闲超时，减少频繁清理
+  max_concurrent_streams: 4            # 降低并发流数量，减轻调度压力
+  initial_stream_receive_window: 32768 # 缩小窗口，降低内存/CPU压力
+  max_stream_receive_window: 65536
+  initial_conn_receive_window: 65536
+  max_conn_receive_window: 131072
+  keepalive_period: "15s"              # 减少心跳频率，降低 CPU 唤醒
+  disable_path_mtu_discovery: true     # 禁用 MTU 探测，避免分片问题
+  disable_ipv6: true                   # 禁用 IPv6，避免 network unreachable 错误
+prefer_ipv4: true                  # 强制优先 IPv4
 EOF
     echo "✅ 写入优化配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=h3/h2/http1.1，带宽=${UP_BW}/${DOWN_BW}，禁用IPv6）。"
 }
@@ -184,4 +184,5 @@ main() {
 }
 
 main "$@"
+
 
