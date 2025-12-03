@@ -10,7 +10,7 @@ HYSTERIA_VERSION="v2.6.5"
 DEFAULT_PORT=22222
 CERT_FILE="/etc/hysteria2/cert.pem"
 KEY_FILE="/etc/hysteria2/key.pem"
-SNI="yourdomain.com"   # ⚠️ 请替换为你实际绑定的域名（必须解析到服务器）
+SNI="hy2.iconandy.dpdns.org"   # ⚠️ 请替换为你实际绑定的域名（必须解析到服务器）
 
 # 默认带宽（可通过环境变量覆盖）
 UP_BW="${UP_BW:-200mbps}"
@@ -183,3 +183,4 @@ main() {
 }
 
 main "$@"
+
