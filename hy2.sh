@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # -*- coding: utf-8 -*-
-# Hysteria2 极简部署脚本（稳态与低占用优化版 + 守护进程）
-# 适用于超低内存环境（32-64MB），自动密码、CPU保护、差网稳态、后台守护
+# Hysteria2 极简部署脚本（支持命令行端口参数 + 默认跳过证书验证）
+# 适用于超低内存环境（32-64MB）
 
-set -euo pipefail
+set -e
 
-# ---------- 基础配置 ----------
+# ---------- 默认配置 ----------
 HYSTERIA_VERSION="v2.6.5"
-DEFAULT_PORT=22222
+DEFAULT_PORT=22222         # 自适应端口
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
-SNI="www.wispbyte.iconandy.dpdns.org"
+SNI="wispbyte.iconandy.dpdns.org"
 ALPN="h3"
+# ------------------------------
 
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-echo "Hysteria2 稳态优化部署脚本（Shell 版）"
-echo "支持命令行端口参数，如：bash hy2.sh 443"
+echo "Hysteria2 极简部署脚本（Shell 版）"
+echo "支持命令行端口参数，如：bash hysteria2.sh 443"
 echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 
 # ---------- 获取端口 ----------
@@ -27,7 +28,7 @@ else
     echo "⚙️ 未提供端口参数，使用默认端口: $SERVER_PORT"
 fi
 
-# ---------- 架构检测 ----------
+# ---------- 检测架构 ----------
 arch_name() {
     local machine
     machine=$(uname -m | tr '[:upper:]' '[:lower:]')
@@ -39,6 +40,7 @@ arch_name() {
         echo ""
     fi
 }
+
 ARCH=$(arch_name)
 if [ -z "$ARCH" ]; then
   echo "❌ 无法识别 CPU 架构: $(uname -m)"
@@ -48,19 +50,17 @@ fi
 BIN_NAME="hysteria-linux-${ARCH}"
 BIN_PATH="./${BIN_NAME}"
 
-# ---------- 生成/读取强密码 ----------
-ensure_password() {
-    if [[ -f ".hy2_pass" && -s ".hy2_pass" ]]; then
-        AUTH_PASSWORD="$(cat .hy2_pass)"
-        echo "✅ 读取已有强密码。"
-    else
-        base=$(openssl rand -base64 32 | tr -d '/+=\n' | head -c 32)
-        AUTH_PASSWORD="$(printf "%s" "$base" | openssl dgst -sha256 | awk '{print $2}' | head -c 32)"
-        echo "$AUTH_PASSWORD" > .hy2_pass
-        chmod 600 .hy2_pass
-        echo "🔐 已生成强密码并写入 .hy2_pass"
-    fi
-}
+# ========== 强密码 ==========
+if [[ -f ".hy2_pass" ]] && [[ -s ".hy2_pass" ]]; then
+    AUTH_PASSWORD="$(cat .hy2_pass)"
+    echo "✅ 读取已有密码"
+else
+    AUTH_PASSWORD="$(openssl rand -hex 16)"
+    echo "$AUTH_PASSWORD" > .hy2_pass
+    chmod 600 .hy2_pass
+    echo "🔐 新生成 32 位十六进制强密码并保存至 .hy2_pass"
+fi
+
 
 # ---------- 下载二进制 ----------
 download_binary() {
@@ -84,7 +84,6 @@ ensure_cert() {
     echo "🔑 未发现证书，使用 openssl 生成自签证书（prime256v1）..."
     openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
-    chmod 600 "$KEY_FILE"
     echo "✅ 证书生成成功。"
 }
 
@@ -101,16 +100,17 @@ auth:
   type: "password"
   password: "${AUTH_PASSWORD}"
 bandwidth:
-  up: "60mbps"
-  down: "60mbps"
+  up: "20mbps"
+  down: "20mbps"
 quic:
-  max_idle_timeout: "30s"
-  max_concurrent_streams: 2
-  initial_stream_receive_window: 32768
-  max_stream_receive_window: 65536
-  initial_conn_receive_window: 65536
-  max_conn_receive_window: 131072
-  keepalive_period: "7s"
+  max_idle_timeout: "120s"
+ keepAlivePeriod: 60s
+  disablePathMTUDiscovery: false   # 2025 建议开启，部分网络关闭会更慢
+  maxConcurrentStreams: 16         # 低内存最佳值
+  initial_stream_receive_window: 65536
+  max_stream_receive_window: 131072
+  initial_conn_receive_window: 131072
+  max_conn_receive_window: 20971520
 EOF
     echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=${ALPN}）。"
 }
@@ -124,17 +124,17 @@ get_server_ip() {
 # ---------- 打印连接信息 ----------
 print_connection_info() {
     local IP="$1"
-    echo "🎉 Hysteria2 部署成功！（稳态优化版）"
+    echo "🎉 Hysteria2 部署成功！（极简优化版）"
     echo "=========================================================================="
     echo "📋 服务器信息:"
     echo "   🌐 IP地址: $IP"
     echo "   🔌 端口: $SERVER_PORT"
     echo "   🔑 密码: $AUTH_PASSWORD"
     echo ""
-    echo "📱 节点链接（仅供个人使用）:"
-    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#Hy2-Private"
+    echo "📱 节点链接（SNI=${SNI}, ALPN=${ALPN}, 跳过证书验证）:"
+    echo "hysteria2://${AUTH_PASSWORD}@${IP}:${SERVER_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#Hy2-Bing"
     echo ""
-    echo "📄 客户端配置文件示例:"
+    echo "📄 客户端配置文件:"
     echo "server: ${IP}:${SERVER_PORT}"
     echo "auth: ${AUTH_PASSWORD}"
     echo "tls:"
@@ -148,29 +148,18 @@ print_connection_info() {
     echo "=========================================================================="
 }
 
-# ---------- 守护进程逻辑 ----------
-daemon_run() {
-    echo "🛡️ 启动守护模式：后台运行并自动重启"
-    while true; do
-        nohup "$BIN_PATH" server -c server.yaml >> hy2.log 2>&1 &
-        PID=$!
-        echo "🚀 Hysteria2 已启动 (PID=$PID)，日志写入 hy2.log"
-        wait $PID
-        EXIT_CODE=$?
-        echo "⚠️ 进程退出 (code=$EXIT_CODE)，5 秒后重启..."
-        sleep 5
-    done
-}
-
 # ---------- 主逻辑 ----------
 main() {
-    ensure_password
     download_binary
     ensure_cert
     write_config
     SERVER_IP=$(get_server_ip)
     print_connection_info "$SERVER_IP"
-    daemon_run
+    echo "🚀 启动 Hysteria2 服务器..."
+    exec "$BIN_PATH" server -c server.yaml
 }
 
 main "$@"
+
+
+
