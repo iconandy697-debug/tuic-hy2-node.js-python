@@ -1,86 +1,119 @@
-#!/bin/bash
-# Wispbyte / Pterodactyl 专用 Hysteria2 超隐蔽部署脚本（2025 终极版）
-# 特性：零日志、随机端口、进程名伪装、CPU<10%、masquerade 伪装流量、自动重启、永不掉线
+#!/usr/bin/env bash
+# -*- coding: utf-8 -*-
+# 适用于超低内存环境（32-64MB）
 
-cd /home/container || exit 1
+set -e
 
-# ==================== 可自定义区（改这里就行） ====================
-BIN="sysmonitor"                    # 伪装进程名（ps 看不到 Hysteria）
-VER="v2.6.5"                        # Hysteria2 版本（推荐不要改，最新版反而容易被特征识别）
-SNI="www.microsoft.com"             # 伪装域名（微软最稳）
-MASQUERADE_URL="https://bing.com"   # masquerade 伪装目标
-UP_BPS="15 mbps"                    # 上行限速
-DOWN_BPS="40 mbps"                  # 下行限速
-# ==============================================================
+# ---------- 默认配置 ----------
+HYSTERIA_VERSION="v2.6.5"
+DEFAULT_PORT=22222         # 自适应端口
+AUTH_PASSWORD="ieishare20ll"   # 建议修改为复杂密码
+CERT_FILE="cert.pem"
+KEY_FILE="key.pem"
+SNI="www.bing.com"
+ALPN="h3"
 
-# 架构自适应
-ARCH=$(uname -m | tr '[:upper:]' '[:lower:]' | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-URL="https://github.com/apernet/hysteria/releases/download/app/${VER}/hysteria-linux-${ARCH}"
-
-# 随机端口（15000~65000，避开常用端口）
-PORT=$((RANDOM % 50000 + 15000))
-
-# 密码持久化
-if [ -f .pass ]; then
-    PASS=$(cat .pass)
+# ---------- 获取端口 ----------
+if [[ $# -ge 1 && -n "${1:-}" ]]; then
+    SERVER_PORT="$1"
+    echo "✅ 使用命令行指定端口: $SERVER_PORT"
 else
-    PASS=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c32)
-    echo "$PASS" > .pass
-    chmod 600 .pass
+    SERVER_PORT="${SERVER_PORT:-$DEFAULT_PORT}"
+    echo "⚙️ 未提供端口参数，使用默认端口: $SERVER_PORT"
 fi
 
-# 下载二进制并伪装（已存在则跳过）
-if [ ! -f "$BIN" ]; then
-    curl -Ls --fail --retry 3 --connect-timeout 10 "$URL" -o "$BIN" >/dev/null 2>&1
-    chmod +x "$BIN"
+# ---------- 检测架构 ----------
+arch_name() {
+    local machine
+    machine=$(uname -m | tr '[:upper:]' '[:lower:]')
+    if [[ "$machine" == *"arm64"* ]] || [[ "$machine" == *"aarch64"* ]]; then
+        echo "arm64"
+    elif [[ "$machine" == *"x86_64"* ]] || [[ "$machine" == *"amd64"* ]]; then
+        echo "amd64"
+    else
+        echo ""
+    fi
+}
+
+ARCH=$(arch_name)
+if [ -z "$ARCH" ]; then
+  echo "❌ 无法识别 CPU 架构: $(uname -m)"
+  exit 1
 fi
 
-# 生成自签证书（已存在则跳过）
-if [ ! -f cert.pem ] || [ ! -f key.pem ]; then
-    openssl req -x509 -nodes -days 3650 \
-        -newkey ec:<(openssl ecparam -name prime256v1) \
-        -keyout key.pem -out cert.pem \
-        -subj "/CN=${SNI}" >/dev/null 2>&1
-fi
+BIN_NAME="hysteria-linux-${ARCH}"
+BIN_PATH="./${BIN_NAME}"
 
-# 写入超低占 + 高隐蔽性配置
-cat > config.yaml <<EOF
-listen: :$PORT
+# ---------- 下载二进制 ----------
+download_binary() {
+    if [ -f "$BIN_PATH" ]; then
+        echo "✅ 二进制已存在，跳过下载。"
+        return
+    fi
+    URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/${BIN_NAME}"
+    echo "⏳ 下载: $URL"
+    curl -L --retry 3 --connect-timeout 30 -o "$BIN_PATH" "$URL"
+    chmod +x "$BIN_PATH"
+    echo "✅ 下载完成并设置可执行: $BIN_PATH"
+}
+
+# ---------- 生成证书 ----------
+ensure_cert() {
+    if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
+        echo "✅ 发现证书，使用现有 cert/key。"
+        return
+    fi
+    echo "🔑 未发现证书，使用 openssl 生成自签证书（prime256v1）..."
+    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
+    echo "✅ 证书生成成功。"
+}
+
+# ---------- 写配置文件 ----------
+write_config() {
+cat > server.yaml <<EOF
+listen: ":${SERVER_PORT}"
 tls:
-  cert: cert.pem
-  key: key.pem
+  cert: "$(pwd)/${CERT_FILE}"
+  key: "$(pwd)/${KEY_FILE}"
+  alpn:
+    - "${ALPN}"
 auth:
-  type: password
-  password: $PASS
+  type: "password"
+  password: "${AUTH_PASSWORD}"
 bandwidth:
-  up: $UP_BPS
-  down: $DOWN_BPS
+  up: "200mbps"
+  down: "200mbps"
 quic:
-  max_concurrent_streams: 6
-  max_idle_timeout: 90s
-  keepAlivePeriod: 60s
-  initial_stream_receive_window: 32768
-  max_stream_receive_window: 65536
-  initial_conn_receive_window: 65536
-  max_conn_receive_window: 131072
-masquerade:
-  type: proxy
-  proxy:
-    url: $MASQUERADE_URL
-    rewriteHost: true
-fastOpen: true
-lazyStart: true
-disableUDP: false
-udpReceiveBuffer: 4mb
-udpSendBuffer: 4mb
+  max_idle_timeout: "10s"
+  max_concurrent_streams: 4
+  initial_stream_receive_window: 65536
+  max_stream_receive_window: 131072
+  initial_conn_receive_window: 131072
+  max_conn_receive_window: 262144
 EOF
+    echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=${ALPN}）。"
+}
 
-# 清理旧进程（防止多开）
-pkill -f "$BIN" 2>/dev/null || true
-sleep 2
+# ---------- 获取服务器 IP ----------
+get_server_ip() {
+    IP=$(curl -s --max-time 10 https://api.ipify.org || echo "YOUR_SERVER_IP")
+    echo "$IP"
+}
 
-# 关键：必须用 exec 前台运行，否则面板认为掉线
-echo "Hysteria2 已启动 | 端口: $PORT | CPU<10% | 伪装: $MASQUERADE_URL"
-echo "获取信息命令：cat .pass ; grep listen config.yaml ; curl -s ifconfig.me"
 
-exec ./"$BIN" server -c config.yaml
+# ---------- 主逻辑 ----------
+main() {
+    download_binary
+    ensure_cert
+    write_config
+    SERVER_IP=$(get_server_ip)
+    print_connection_info "$SERVER_IP"
+    # echo "🚀 启动 服务器..."
+    exec "$BIN_PATH" server -c server.yaml
+}
+
+main "$@"
+
+
+
