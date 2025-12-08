@@ -8,7 +8,6 @@ set -e
 # ---------- 默认配置 ----------
 HYSTERIA_VERSION="v2.6.5"
 DEFAULT_PORT=22222         # 自适应端口
-AUTH_PASSWORD="iesharefd28iaahty2025"   # 建议修改为复杂密码
 CERT_FILE="cert.pem"
 KEY_FILE="key.pem"
 SNI="www.bing.com"
@@ -51,6 +50,22 @@ fi
 BIN_NAME="hysteria-linux-${ARCH}"
 BIN_PATH="./${BIN_NAME}"
 
+# ========== 防止重复运行 ==========
+if pidof -x "$(basename $BIN_PATH)" > /dev/null; then
+    echo "⚠️  Hysteria2 正在运行中，阻止重复启动"
+    exit 1
+fi
+
+# ========== 强密码 ==========
+if [[ -f ".hy2_pass" ]] && [[ -s ".hy2_pass" ]]; then
+    AUTH_PASSWORD="$(cat .hy2_pass)"
+    echo "✅ 读取已有密码"
+else
+    AUTH_PASSWORD="$(openssl rand -hex 16)"
+    echo "$AUTH_PASSWORD" > .hy2_pass
+    chmod 600 .hy2_pass
+    echo "🔐 新生成 32 位十六进制强密码并保存至 .hy2_pass"
+fi
 # ---------- 下载二进制 ----------
 download_binary() {
     if [ -f "$BIN_PATH" ]; then
@@ -89,11 +104,12 @@ auth:
   type: "password"
   password: "${AUTH_PASSWORD}"
 bandwidth:
-  up: "200mbps"
-  down: "200mbps"
+  up: "50mbps"
+  down: "100mbps"
 quic:
-  max_idle_timeout: "10s"
-  max_concurrent_streams: 4
+  max_idle_timeout: "120s"
+  max_concurrent_streams: 16
+  keepAlivePeriod: 60s
   initial_stream_receive_window: 65536
   max_stream_receive_window: 131072
   initial_conn_receive_window: 131072
@@ -147,7 +163,6 @@ main() {
 }
 
 main "$@"
-
 
 
 
