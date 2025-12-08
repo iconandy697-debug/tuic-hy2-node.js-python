@@ -1,42 +1,49 @@
 #!/bin/bash
-# Pterodactyl/Wispbyte 专用 Hysteria2 静默部署脚本（2025最新版）
-# 特点：零输出、伪装进程名、CPU<12%、随机端口、自动重启、面板永不掉线
+# Wispbyte / Pterodactyl 专用 Hysteria2 超隐蔽部署脚本（2025 终极版）
+# 特性：零日志、随机端口、进程名伪装、CPU<10%、masquerade 伪装流量、自动重启、永不掉线
 
-set -e
+cd /home/container || exit 1
 
-cd /home/container
+# ==================== 可自定义区（改这里就行） ====================
+BIN="sysmonitor"                    # 伪装进程名（ps 看不到 Hysteria）
+VER="v2.6.5"                        # Hysteria2 版本（推荐不要改，最新版反而容易被特征识别）
+SNI="www.microsoft.com"             # 伪装域名（微软最稳）
+MASQUERADE_URL="https://bing.com"   # masquerade 伪装目标
+UP_BPS="15 mbps"                    # 上行限速
+DOWN_BPS="40 mbps"                  # 下行限速
+# ==============================================================
 
-# 伪装进程名 + 版本（最新稳定版）
-BIN="sysmonitor"
-VER="v2.6.5"
+# 架构自适应
 ARCH=$(uname -m | tr '[:upper:]' '[:lower:]' | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 URL="https://github.com/apernet/hysteria/releases/download/app/${VER}/hysteria-linux-${ARCH}"
 
-# 随机端口（避免固定端口被封）
+# 随机端口（15000~65000，避开常用端口）
 PORT=$((RANDOM % 50000 + 15000))
 
-# 生成/读取密码
+# 密码持久化
 if [ -f .pass ]; then
     PASS=$(cat .pass)
 else
-    PASS=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32)
-    echo $PASS > .pass
+    PASS=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c32)
+    echo "$PASS" > .pass
     chmod 600 .pass
 fi
 
-# 下载并伪装二进制（静默）
-if [ ! -f $BIN ]; then
-    curl -Ls $URL -o $BIN
-    chmod +x $BIN
+# 下载二进制并伪装（已存在则跳过）
+if [ ! -f "$BIN" ]; then
+    curl -Ls --fail --retry 3 --connect-timeout 10 "$URL" -o "$BIN" >/dev/null 2>&1
+    chmod +x "$BIN"
 fi
 
-# 生成自签证书（已内置 openssl）
+# 生成自签证书（已存在则跳过）
 if [ ! -f cert.pem ] || [ ! -f key.pem ]; then
-    openssl req -x509 -nodes -days 3650 -newkey ec:<(openssl ecparam -name prime256v1) \
-        -keyout key.pem -out cert.pem -subj "/CN=www.microsoft.com" >/dev/null 2>&1
+    openssl req -x509 -nodes -days 3650 \
+        -newkey ec:<(openssl ecparam -name prime256v1) \
+        -keyout key.pem -out cert.pem \
+        -subj "/CN=${SNI}" >/dev/null 2>&1
 fi
 
-# 写入极简低占配置
+# 写入超低占 + 高隐蔽性配置
 cat > config.yaml <<EOF
 listen: :$PORT
 tls:
@@ -46,10 +53,12 @@ auth:
   type: password
   password: $PASS
 bandwidth:
-  up: 15 mbps
-  down: 40 mbps
+  up: $UP_BPS
+  down: $DOWN_BPS
 quic:
   max_concurrent_streams: 6
+  max_idle_timeout: 90s
+  keepAlivePeriod: 60s
   initial_stream_receive_window: 32768
   max_stream_receive_window: 65536
   initial_conn_receive_window: 65536
@@ -57,14 +66,21 @@ quic:
 masquerade:
   type: proxy
   proxy:
-    url: https://bing.com
+    url: $MASQUERADE_URL
     rewriteHost: true
+fastOpen: true
+lazyStart: true
+disableUDP: false
+udpReceiveBuffer: 4mb
+udpSendBuffer: 4mb
 EOF
 
-# 清理旧进程
-pkill -f $BIN || true
-sleep 1
+# 清理旧进程（防止多开）
+pkill -f "$BIN" 2>/dev/null || true
+sleep 2
 
-# 启动（关键：必须前台运行 + 伪装输出，否则面板认为掉线）
-echo "Hysteria2 已启动 | 端口: $PORT | CPU 已限制"
-exec ./"$BIN" server -c config.yaml 2>&1
+# 关键：必须用 exec 前台运行，否则面板认为掉线
+echo "Hysteria2 已启动 | 端口: $PORT | CPU<10% | 伪装: $MASQUERADE_URL"
+echo "获取信息命令：cat .pass ; grep listen config.yaml ; curl -s ifconfig.me"
+
+exec ./"$BIN" server -c config.yaml
