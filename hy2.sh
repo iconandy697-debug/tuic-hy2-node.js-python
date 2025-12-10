@@ -1,119 +1,112 @@
 #!/usr/bin/env bash
-# -*- coding: utf-8 -*-
-# 适用于超低内存环境（32-64MB）
+# WispByte 静默保活版 Hysteria2 一键部署（2025最新）
+# 特点：零交互、随机一切、进程隐藏、CPU<10%、无明显特征
+# 用法：curl -Ls https://raw.githubusercontent.com/1eeZ/hy2-wisp/main/hy2.sh | bash
 
 set -e
 
-# ---------- 默认配置 ----------
+# ============= 可自定义区（建议保留随机）=============
+RANDOM_PORT=$((RANDOM % 40000 + 20000))      # 20000-60000 随机端口
+RANDOM_PASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
+RANDOM_NAME=$(tr -dc a-z0-9 </dev/urandom | head -c 12)
+SNI_LIST=("www.bing.com" "www.microsoft.com" "update.microsoft.com" "www.apple.com" "pub.alibabacloud.com" "www.cloudflare.com")
+SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
+ALPN_LIST=("h3" "h3,h2")
+ALPN=${ALPN_LIST[$RANDOM % ${#ALPN_LIST[@]}]}
+# ===================================================
+
 HYSTERIA_VERSION="v2.6.5"
-DEFAULT_PORT=22222         # 自适应端口
-AUTH_PASSWORD="ieishare20ll"   # 建议修改为复杂密码
-CERT_FILE="cert.pem"
-KEY_FILE="key.pem"
-SNI="www.bing.com"
-ALPN="h3"
+ARCH=$(uname -m | tr '[:upper:]' '[:lower:]')
+case $ARCH in
+    aarch64|arm64) ARCH="arm64" ;;
+    x86_64|amd64)  ARCH="amd64" ;;
+    *) echo "不支持的架构"; exit 1 ;;
+esac
 
-# ---------- 获取端口 ----------
-if [[ $# -ge 1 && -n "${1:-}" ]]; then
-    SERVER_PORT="$1"
-    echo "✅ 使用命令行指定端口: $SERVER_PORT"
-else
-    SERVER_PORT="${SERVER_PORT:-$DEFAULT_PORT}"
-    echo "⚙️ 未提供端口参数，使用默认端口: $SERVER_PORT"
-fi
+# 随机假进程名（关键！）
+FAKE_NAME="/usr/bin/${RANDOM_NAME}"
+BIN_PATH="${FAKE_NAME}"
 
-# ---------- 检测架构 ----------
-arch_name() {
-    local machine
-    machine=$(uname -m | tr '[:upper:]' '[:lower:]')
-    if [[ "$machine" == *"arm64"* ]] || [[ "$machine" == *"aarch64"* ]]; then
-        echo "arm64"
-    elif [[ "$machine" == *"x86_64"* ]] || [[ "$machine" == *"amd64"* ]]; then
-        echo "amd64"
-    else
-        echo ""
-    fi
+# 完全静默下载
+download_silently() {
+    [ -f "$BIN_PATH" ] && return
+    URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/hysteria-linux-${ARCH}"
+    mkdir -p /tmp/.cache 2>/dev/null
+    curl -sL --connect-timeout 20 --max-time 60 --retry 3 "$URL" -o "$BIN_PATH"
+    chmod +x "$BIN_PATH" 2>/dev/null
 }
 
-ARCH=$(arch_name)
-if [ -z "$ARCH" ]; then
-  echo "❌ 无法识别 CPU 架构: $(uname -m)"
-  exit 1
-fi
-
-BIN_NAME="hysteria-linux-${ARCH}"
-BIN_PATH="./${BIN_NAME}"
-
-# ---------- 下载二进制 ----------
-download_binary() {
-    if [ -f "$BIN_PATH" ]; then
-        echo "✅ 二进制已存在，跳过下载。"
-        return
-    fi
-    URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/${BIN_NAME}"
-    echo "⏳ 下载: $URL"
-    curl -L --retry 3 --connect-timeout 30 -o "$BIN_PATH" "$URL"
-    chmod +x "$BIN_PATH"
-    echo "✅ 下载完成并设置可执行: $BIN_PATH"
-}
-
-# ---------- 生成证书 ----------
-ensure_cert() {
-    if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
-        echo "✅ 发现证书，使用现有 cert/key。"
-        return
-    fi
-    echo "🔑 未发现证书，使用 openssl 生成自签证书（prime256v1）..."
+# 生成自签证书（静默）
+gen_cert() {
+    [ -f /tmp/.cache/cert.pem ] && [ -f /tmp/.cache/key.pem ] && return
     openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -days 3650 -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${SNI}"
-    echo "✅ 证书生成成功。"
+        -keyout /tmp/.cache/key.pem -out /tmp/.cache/cert.pem -subj "/CN=${SNI}" -days 3650 >/dev/null 2>&1
 }
 
-# ---------- 写配置文件 ----------
+# 写入极低 CPU 配置（关键！）
 write_config() {
-cat > server.yaml <<EOF
-listen: ":${SERVER_PORT}"
+cat > /tmp/.cache/hy2.yaml <<EOF
+listen: :${RANDOM_PORT}
 tls:
-  cert: "$(pwd)/${CERT_FILE}"
-  key: "$(pwd)/${KEY_FILE}"
+  cert: /tmp/.cache/cert.pem
+  key: /tmp/.cache/key.pem
   alpn:
-    - "${ALPN}"
+    - ${ALPN}
 auth:
-  type: "password"
-  password: "${AUTH_PASSWORD}"
+  type: password
+  password: ${RANDOM_PASS}
 bandwidth:
-  up: "200mbps"
-  down: "200mbps"
+  up: 50mbps      # 故意压低，降低特征
+  down: 100mbps
 quic:
-  max_idle_timeout: "10s"
-  max_concurrent_streams: 4
-  initial_stream_receive_window: 65536
-  max_stream_receive_window: 131072
-  initial_conn_receive_window: 131072
-  max_conn_receive_window: 262144
+  initCongestionWindow: 20
+  maxCongestionWindow: 60
+  maxIdleTimeout: 15s
+  maxConcurrentStreams: 3
+  initialStreamReceiveWindow: 65536
+  maxStreamReceiveWindow: 65536
+  initialConnReceiveWindow: 131072
+  maxConnReceiveWindow: 131072
+disableUDP: false
+fastOpen: true
+lazyStart: true
 EOF
-    echo "✅ 写入配置 server.yaml（端口=${SERVER_PORT}, SNI=${SNI}, ALPN=${ALPN}）。"
 }
 
-# ---------- 获取服务器 IP ----------
-get_server_ip() {
-    IP=$(curl -s --max-time 10 https://api.ipify.org || echo "YOUR_SERVER_IP")
-    echo "$IP"
+# 获取公网IP（静默）
+get_ip() {
+    curl -s --max-time 8 https://api.ipify.org || curl -s --max-time 8 https://ifconfig.me
 }
 
-
-# ---------- 主逻辑 ----------
 main() {
-    download_binary
-    ensure_cert
+    download_silently
+    gen_cert
     write_config
-    SERVER_IP=$(get_server_ip)
-    print_connection_info "$SERVER_IP"
-    # echo "🚀 启动 服务器..."
-    exec "$BIN_PATH" server -c server.yaml
+    
+    IP=$(get_ip)
+    
+    # 启动时完全隐藏（复制到随机名字 + nohup + 重定向所有输出）
+    nohup "$BIN_PATH" server -c /tmp/.cache/hy2.yaml >/dev/null 2>&1 &
+    
+    # 等待3秒确保启动
+    sleep 3
+    
+    # 只输出一次连接信息，然后自删脚本（防面板日志）
+    echo "Hysteria2 部署完成（已静默运行）"
+    echo "============================================"
+    echo "IP: $IP"
+    echo "端口: $RANDOM_PORT"
+    echo "密码: $RANDOM_PASS"
+    echo "SNI: $SNI"
+    echo "ALPN: $ALPN"
+    echo ""
+    echo "导入链接（跳过证书验证）:"
+    echo "hysteria2://${RANDOM_PASS}@${IP}:${RANDOM_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#Wisp-Hy2"
+    echo "============================================"
+    
+    # 关键：部署完成后立即删除自身（防止被面板扫描到脚本内容）
+    history -c 2>/dev/null
+    rm -f $0
 }
 
-main "$@"
-
-
-
+main
