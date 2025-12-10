@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# WispByte 静默保活版 Hysteria2 一键部署（2025最新）
-# 特点：零交互、随机一切、进程隐藏、CPU<10%、无明显特征
-# 用法：curl -Ls https://raw.githubusercontent.com/1eeZ/hy2-wisp/main/hy2.sh | bash
+# WispByte 静默保活版 Hysteria2 一键部署（2025最新·强制留链接版）
+# 改动点：除了终端输出外，还同时写入 /root/hy2.txt 和 /tmp/.hy2_link（兼容各种奇葩面板）
 
 set -e
 
-# ============= 可自定义区（建议保留随机）=============
-RANDOM_PORT=$((RANDOM % 40000 + 20000))      # 20000-60000 随机端口
+# ============= 可自定义区 =============
+RANDOM_PORT=$((RANDOM % 40000 + 20000))
 RANDOM_PASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
 RANDOM_NAME=$(tr -dc a-z0-9 </dev/urandom | head -c 12)
 SNI_LIST=("www.bing.com" "www.microsoft.com" "update.microsoft.com" "www.apple.com" "pub.alibabacloud.com" "www.cloudflare.com")
 SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
 ALPN_LIST=("h3" "h3,h2")
 ALPN=${ALPN_LIST[$RANDOM % ${#ALPN_LIST[@]}]}
-# ===================================================
+# ======================================
 
 HYSTERIA_VERSION="v2.6.5"
 ARCH=$(uname -m | tr '[:upper:]' '[:lower:]')
@@ -23,11 +22,9 @@ case $ARCH in
     *) echo "不支持的架构"; exit 1 ;;
 esac
 
-# 随机假进程名（关键！）
 FAKE_NAME="/usr/bin/${RANDOM_NAME}"
 BIN_PATH="${FAKE_NAME}"
 
-# 完全静默下载
 download_silently() {
     [ -f "$BIN_PATH" ] && return
     URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/hysteria-linux-${ARCH}"
@@ -36,14 +33,12 @@ download_silently() {
     chmod +x "$BIN_PATH" 2>/dev/null
 }
 
-# 生成自签证书（静默）
 gen_cert() {
     [ -f /tmp/.cache/cert.pem ] && [ -f /tmp/.cache/key.pem ] && return
     openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout /tmp/.cache/key.pem -out /tmp/.cache/cert.pem -subj "/CN=${SNI}" -days 3650 >/dev/null 2>&1
 }
 
-# 写入极低 CPU 配置（关键！）
 write_config() {
 cat > /tmp/.cache/hy2.yaml <<EOF
 listen: :${RANDOM_PORT}
@@ -56,26 +51,65 @@ auth:
   type: password
   password: ${RANDOM_PASS}
 bandwidth:
-  up: 50mbps      # 故意压低，降低特征
+  up: 50mbps
   down: 100mbps
 quic:
   initCongestionWindow: 20
   maxCongestionWindow: 60
   maxIdleTimeout: 15s
   maxConcurrentStreams: 3
-  initialStreamReceiveWindow: 65536
-  maxStreamReceiveWindow: 65536
-  initialConnReceiveWindow: 131072
-  maxConnReceiveWindow: 131072
 disableUDP: false
 fastOpen: true
 lazyStart: true
 EOF
 }
 
-# 获取公网IP（静默）
 get_ip() {
-    curl -s --max-time 8 https://api.ipify.org || curl -s --max-time 8 https://ifconfig.me
+    curl -s --max-time 8 https://api.ipify.org || curl -s --max-time 8 https://ifconfig.me || echo "127.0.0.1"
+}
+
+# 关键函数：把链接同时写入多个位置，保证你一定能看到
+save_and_show_link() {
+    local ip=$1
+    local link="hysteria2://${RANDOM_PASS}@${ip}:${RANDOM_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#Wisp-Hy2"
+
+    # 1. 正常终端输出（某些面板能看到）
+    echo "Hysteria2 部署完成（已静默运行）"
+    echo "============================================"
+    echo "IP: $ip"
+    echo "端口: $RANDOM_PORT"
+    echo "密码: $RANDOM_PASS"
+    echo "SNI: $SNI"
+    echo "ALPN: $ALPN"
+    echo ""
+    echo "导入链接（跳过证书验证）:"
+    echo "$link"
+    echo "============================================"
+
+    # 2. 强制写入文件（WispByte 必看这里！）
+    mkdir -p /root 2>/dev/null
+    cat > /root/hy2.txt <<EOF
+Hysteria2 连接信息（$(date +"%Y-%m-%d %H:%M:%S")）
+IP: $ip
+端口: $RANDOM_PORT
+密码: $RANDOM_PASS
+SNI: $SNI
+ALPN: $ALPN
+链接: $link
+EOF
+
+    # 3. 再写一份到 /tmp，防止某些面板禁写 /root
+    cat > /tmp/.hy2_link <<EOF
+$link
+EOF
+
+    # 4. 再写一份到当前目录，兼容手动 bash 运行
+    echo "$link" > ./hy2_link.txt 2>/dev/null || true
+
+    echo "连接信息已同时保存到以下位置（随便找一个看就行）：
+    /root/hy2.txt
+    /tmp/.hy2_link
+    当前目录 hy2_link.txt"
 }
 
 main() {
@@ -85,28 +119,16 @@ main() {
     
     IP=$(get_ip)
     
-    # 启动时完全隐藏（复制到随机名字 + nohup + 重定向所有输出）
-    nohup "$BIN_PATH" server -c /tmp/.cache/hy2.yaml >/dev/null 2>&1 &
+    nohup "$BIN_PATH" server -c /tmp/.cache/hy2.yaml >/dev/null 2>&1 & disown
     
-    # 等待3秒确保启动
-    sleep 3
+    sleep 4
     
-    # 只输出一次连接信息，然后自删脚本（防面板日志）
-    echo "Hysteria2 部署完成（已静默运行）"
-    echo "============================================"
-    echo "IP: $IP"
-    echo "端口: $RANDOM_PORT"
-    echo "密码: $RANDOM_PASS"
-    echo "SNI: $SNI"
-    echo "ALPN: $ALPN"
-    echo ""
-    echo "导入链接（跳过证书验证）:"
-    echo "hysteria2://${RANDOM_PASS}@${IP}:${RANDOM_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#Wisp-Hy2"
-    echo "============================================"
+    # 核心：把链接同时输出到终端 + 写文件
+    save_and_show_link "$IP"
     
-    # 关键：部署完成后立即删除自身（防止被面板扫描到脚本内容）
-    history -c 2>/dev/null
-    rm -f $0
+    # 清理历史记录和自身（可选，保留链接文件）
+    history -c 2>/dev/null || true
+    rm -f "$0" 2>/dev/null || true
 }
 
 main
