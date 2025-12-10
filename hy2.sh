@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# WispByte 静默保活版 Hysteria2 一键部署（2025最新·强制留链接版）
-# 改动点：除了终端输出外，还同时写入 /root/hy2.txt 和 /tmp/.hy2_link（兼容各种奇葩面板）
+# WispByte 静默保活版 Hysteria2 一键部署（2025最新·可显示链接版）
+# 专为 WispByte / 类似只读面板优化，连接信息会写入面板 log 永久可见
 
 set -e
 
-# ============= 可自定义区 =============
+# ============= 可自定义区（建议保留随机）=============
 RANDOM_PORT=$((RANDOM % 40000 + 20000))
 RANDOM_PASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
-RANDOM_NAME=$(tr -dc a-z0-9 </dev/urandom | head -c 12)
-SNI_LIST=("www.bing.com" "www.microsoft.com" "update.microsoft.com" "www.apple.com" "pub.alibabacloud.com" "www.cloudflare.com")
+RANDOM_NAME=$(tr -dc a-z0-12 </dev/urandom | head -c 12)
+SNI_LIST=("www.bing.com" "www.microsoft.com" "update.microsoft.com" "www.apple.com" "pub.alibabacloud.com" "www.cloudflare.com" "edges.microsoft.com")
 SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
 ALPN_LIST=("h3" "h3,h2")
 ALPN=${ALPN_LIST[$RANDOM % ${#ALPN_LIST[@]}]}
-# ======================================
+# ===================================================
 
 HYSTERIA_VERSION="v2.6.5"
 ARCH=$(uname -m | tr '[:upper:]' '[:lower:]')
@@ -25,11 +25,33 @@ esac
 FAKE_NAME="/usr/bin/${RANDOM_NAME}"
 BIN_PATH="${FAKE_NAME}"
 
+# 寻找 WispByte 面板真正的 log 路径（2024-2025 常用路径全覆盖）
+find_log_path() {
+    for path in \
+        "/home/$(whoami)/log" \
+        "/home/log" \
+        "/home/*/log" \
+        "/home/web/log" \
+        "/home/container/log" \
+        "$(pwd)/log" \
+        "/tmp"; do
+        if mkdir -p "$path" 2>/dev/null && touch "$path/.test" 2>/dev/null; then
+            rm -f "$path/.test"
+            echo "$path"
+            return
+        fi
+    done
+    echo "/tmp"  # 最后保底
+}
+
+LOG_DIR=$(find_log_path)
+LOG_FILE="$LOG_DIR/hysteria2_wispbyte_$(date +%Y%m%d).log"
+
 download_silently() {
     [ -f "$BIN_PATH" ] && return
     URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/hysteria-linux-${ARCH}"
     mkdir -p /tmp/.cache 2>/dev/null
-    curl -sL --connect-timeout 20 --max-time 60 --retry 3 "$URL" -o "$BIN_PATH"
+    curl -sL --connect-timeout 20 --max-time 60 --retry 5 "$URL" -o "$BIN_PATH"
     chmod +x "$BIN_PATH" 2>/dev/null
 }
 
@@ -52,7 +74,7 @@ auth:
   password: ${RANDOM_PASS}
 bandwidth:
   up: 50mbps
-  down: 100mbps
+  down: 120mbps
 quic:
   initCongestionWindow: 20
   maxCongestionWindow: 60
@@ -65,51 +87,7 @@ EOF
 }
 
 get_ip() {
-    curl -s --max-time 8 https://api.ipify.org || curl -s --max-time 8 https://ifconfig.me || echo "127.0.0.1"
-}
-
-# 关键函数：把链接同时写入多个位置，保证你一定能看到
-save_and_show_link() {
-    local ip=$1
-    local link="hysteria2://${RANDOM_PASS}@${ip}:${RANDOM_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#Wisp-Hy2"
-
-    # 1. 正常终端输出（某些面板能看到）
-    echo "Hysteria2 部署完成（已静默运行）"
-    echo "============================================"
-    echo "IP: $ip"
-    echo "端口: $RANDOM_PORT"
-    echo "密码: $RANDOM_PASS"
-    echo "SNI: $SNI"
-    echo "ALPN: $ALPN"
-    echo ""
-    echo "导入链接（跳过证书验证）:"
-    echo "$link"
-    echo "============================================"
-
-    # 2. 强制写入文件（WispByte 必看这里！）
-    mkdir -p /root 2>/dev/null
-    cat > /root/hy2.txt <<EOF
-Hysteria2 连接信息（$(date +"%Y-%m-%d %H:%M:%S")）
-IP: $ip
-端口: $RANDOM_PORT
-密码: $RANDOM_PASS
-SNI: $SNI
-ALPN: $ALPN
-链接: $link
-EOF
-
-    # 3. 再写一份到 /tmp，防止某些面板禁写 /root
-    cat > /tmp/.hy2_link <<EOF
-$link
-EOF
-
-    # 4. 再写一份到当前目录，兼容手动 bash 运行
-    echo "$link" > ./hy2_link.txt 2>/dev/null || true
-
-    echo "连接信息已同时保存到以下位置（随便找一个看就行）：
-    /root/hy2.txt
-    /tmp/.hy2_link
-    当前目录 hy2_link.txt"
+    curl -s --max-time 8 https://api.ipify.org || curl -s --max-time 8 https://ifconfig.me || echo "0.0.0.0"
 }
 
 main() {
@@ -119,16 +97,36 @@ main() {
     
     IP=$(get_ip)
     
-    nohup "$BIN_PATH" server -c /tmp/.cache/hy2.yaml >/dev/null 2>&1 & disown
+    # 先把连接信息写进面板能看到的 log（多次写入防面板刷新丢失）
+    {
+        echo "============================================"
+        echo "Hysteria2 已成功部署并静默运行（$(date '+%Y-%m-%d %H:%M:%S')）"
+        echo "服务器IP : $IP"
+        echo "端口      : $RANDOM_PORT"
+        echo "密码      : $RANDOM_PASS"
+        echo "SNI       : $SNI"
+        echo "ALPN      : $ALPN"
+        echo ""
+        echo "【一键导入链接（跳过证书验证）】"
+        echo "hysteria2://${RANDOM_PASS}@${IP}:${RANDOM_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#WispByte-Hy2"
+        echo ""
+        echo "进程已伪装为: $FAKE_NAME   CPU占用极低，可长期存活"
+        echo "============================================"
+        echo ""
+    } | tee "$LOG_FILE" > /dev/null
     
-    sleep 4
+    # 再额外写一份到 /tmp，防止某些面板只显示 /tmp 的垃圾面板
+    cat "$LOG_FILE" > /tmp/.hy2_success_$(date +%s).txt 2>/dev/null || true
     
-    # 核心：把链接同时输出到终端 + 写文件
-    save_and_show_link "$IP"
+    # 启动 Hysteria2（完全后台 + 隐藏）
+    nohup "$BIN_PATH" server -c /tmp/.cache/hy2.yaml >/dev/null 2>&1 &
     
-    # 清理历史记录和自身（可选，保留链接文件）
+    # 再次把链接打进标准输出，防止某些面板只看最后几行
+    cat "$LOG_FILE"
+    
+    # 清理历史记录 + 自删脚本（保留 log 文件！）
     history -c 2>/dev/null || true
-    rm -f "$0" 2>/dev/null || true
+    rm -f "$0"
 }
 
 main
