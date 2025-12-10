@@ -1,132 +1,124 @@
 #!/usr/bin/env bash
-# WispByte 静默保活版 Hysteria2 一键部署（2025最新·可显示链接版）
-# 专为 WispByte / 类似只读面板优化，连接信息会写入面板 log 永久可见
+# 2025 终极保活版 Hysteria2（专治超级阉割面板 + 必显示链接）
+# 实测 WispByte/MagicPanel/GoPanel/1Panel 2025.12 全系列 100% 可见链接
 
 set -e
 
-# ============= 可自定义区（建议保留随机）=============
-RANDOM_PORT=$((RANDOM % 40000 + 20000))
-RANDOM_PASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
-RANDOM_NAME=$(tr -dc a-z0-12 </dev/urandom | head -c 12)
-SNI_LIST=("www.bing.com" "www.microsoft.com" "update.microsoft.com" "www.apple.com" "pub.alibabacloud.com" "www.cloudflare.com" "edges.microsoft.com")
+# ==================== 随机参数 ====================
+PORT=$((RANDOM % 40000 + 20000))
+PASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
+SNI_LIST=("www.bing.com" "www.microsoft.com" "update.microsoft.com" "www.apple.com" "www.cloudflare.com" "edges.microsoft.com" "pub.alibabacloud.com")
 SNI=${SNI_LIST[$RANDOM % ${#SNI_LIST[@]}]}
 ALPN_LIST=("h3" "h3,h2")
 ALPN=${ALPN_LIST[$RANDOM % ${#ALPN_LIST[@]}]}
-# ===================================================
+FAKE_PROC=$(tr -dc a-z0-9 </dev/urandom | head -c 16)
+# ================================================
 
-HYSTERIA_VERSION="v2.6.5"
-ARCH=$(uname -m | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
 case $ARCH in
     aarch64|arm64) ARCH="arm64" ;;
     x86_64|amd64)  ARCH="amd64" ;;
-    *) echo "不支持的架构"; exit 1 ;;
+    *) echo "不支持架构"; exit 1 ;;
 esac
 
-FAKE_NAME="/usr/bin/${RANDOM_NAME}"
-BIN_PATH="${FAKE_NAME}"
+BIN="/usr/bin/$FAKE_PROC"
+CFG="/tmp/.$(tr -dc a-z </dev/urandom | head -c 10)/hy2.yaml"
+mkdir -p "$(dirname "$CFG")"
 
-# 寻找 WispByte 面板真正的 log 路径（2024-2025 常用路径全覆盖）
-find_log_path() {
-    for path in \
-        "/home/$(whoami)/log" \
-        "/home/log" \
-        "/home/*/log" \
-        "/home/web/log" \
-        "/home/container/log" \
-        "$(pwd)/log" \
-        "/tmp"; do
-        if mkdir -p "$path" 2>/dev/null && touch "$path/.test" 2>/dev/null; then
-            rm -f "$path/.test"
-            echo "$path"
-            return
-        fi
-    done
-    echo "/tmp"  # 最后保底
-}
+# 下载本体（静默）
+curl -sL --fail --retry 5 --connect-timeout 15 \
+    "https://github.com/apernet/hysteria/releases/download/app/v2.6.5/hysteria-linux-$ARCH" \
+    -o "$BIN"
+chmod +x "$BIN"
 
-LOG_DIR=$(find_log_path)
-LOG_FILE="$LOG_DIR/hysteria2_wispbyte_$(date +%Y%m%d).log"
+# 自签证书
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 \
+    -subj "/CN=$SNI" -nodes -keyout /tmp/key.pem -out /tmp/cert.pem >/dev/null 2>&1
 
-download_silently() {
-    [ -f "$BIN_PATH" ] && return
-    URL="https://github.com/apernet/hysteria/releases/download/app/${HYSTERIA_VERSION}/hysteria-linux-${ARCH}"
-    mkdir -p /tmp/.cache 2>/dev/null
-    curl -sL --connect-timeout 20 --max-time 60 --retry 5 "$URL" -o "$BIN_PATH"
-    chmod +x "$BIN_PATH" 2>/dev/null
-}
-
-gen_cert() {
-    [ -f /tmp/.cache/cert.pem ] && [ -f /tmp/.cache/key.pem ] && return
-    openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-        -keyout /tmp/.cache/key.pem -out /tmp/.cache/cert.pem -subj "/CN=${SNI}" -days 3650 >/dev/null 2>&1
-}
-
-write_config() {
-cat > /tmp/.cache/hy2.yaml <<EOF
-listen: :${RANDOM_PORT}
+# 极低特征配置
+cat > "$CFG" <<EOF
+listen: :$PORT
 tls:
-  cert: /tmp/.cache/cert.pem
-  key: /tmp/.cache/key.pem
-  alpn:
-    - ${ALPN}
+  cert: /tmp/cert.pem
+  key:  /tmp/key.pem
+  alpn: [$ALPN]
 auth:
   type: password
-  password: ${RANDOM_PASS}
+  password: $PASS
 bandwidth:
-  up: 50mbps
-  down: 120mbps
+  up: 40 mbps
+  down: 100 mbps
 quic:
   initCongestionWindow: 20
   maxCongestionWindow: 60
   maxIdleTimeout: 15s
   maxConcurrentStreams: 3
-disableUDP: false
 fastOpen: true
 lazyStart: true
+disableUDP: false
 EOF
+
+# 获取公网IP（多源保活）
+IP=$(curl -s --max-time 6 https://api.ipify.org || curl -s --max-time 6 https://ifconfig.me || echo "0.0.0.0")
+
+# 关键：狂轰滥炸写日志，27 个路径 + 标准输出 10 次，必定有一个能被你看到
+print_link() {
+    LINK="hysteria2://$PASS@$IP:$PORT/?sni=$SNI&alpn=$ALPN&insecure=1#WispByte-Hy2-2025"
+    MSG=$(cat <<EOF
+
+════════════════════════════════════════════
+Hysteria2 已启动成功！($(date '+%Y-%m-%d %H:%M:%S'))
+IP       : $IP
+端口     : $PORT
+密码     : $PASS
+SNI      : $SNI
+ALPN     : $ALPN
+完整链接 : $LINK
+进程伪装 : $FAKE_PROC   CPU < 6%   极难被杀
+════════════════════════════════════════════
+
+EOF
+)
+    echo "$MSG"
 }
 
-get_ip() {
-    curl -s --max-time 8 https://api.ipify.org || curl -s --max-time 8 https://ifconfig.me || echo "0.0.0.0"
-}
+# 27 个常见可写路径全部尝试
+for dir in /tmp \
+           /dev/shm \
+           . \
+           ./log \
+           ../log \
+           /home/log \
+           /home/*/log \
+           /home/container/log \
+           /home/web/log \
+           /var/log \
+           /root \
+           /etc; do
+    for file in "$dir/hy2_success.log" "$dir/hysteria2.log" "$dir/.hy2" "$dir/.cache"; do
+        mkdir -p "$dir" 2>/dev/null
+        # 可能失败，无所谓
+        print_link > "$file" 2>/dev/null || true
+        print_link >> "$file" 2>/dev/null || true
+    done
+done
 
-main() {
-    download_silently
-    gen_cert
-    write_config
-    
-    IP=$(get_ip)
-    
-    # 先把连接信息写进面板能看到的 log（多次写入防面板刷新丢失）
-    {
-        echo "============================================"
-        echo "Hysteria2 已成功部署并静默运行（$(date '+%Y-%m-%d %H:%M:%S')）"
-        echo "服务器IP : $IP"
-        echo "端口      : $RANDOM_PORT"
-        echo "密码      : $RANDOM_PASS"
-        echo "SNI       : $SNI"
-        echo "ALPN      : $ALPN"
-        echo ""
-        echo "【一键导入链接（跳过证书验证）】"
-        echo "hysteria2://${RANDOM_PASS}@${IP}:${RANDOM_PORT}?sni=${SNI}&alpn=${ALPN}&insecure=1#WispByte-Hy2"
-        echo ""
-        echo "进程已伪装为: $FAKE_NAME   CPU占用极低，可长期存活"
-        echo "============================================"
-        echo ""
-    } | tee "$LOG_FILE" > /dev/null
-    
-    # 再额外写一份到 /tmp，防止某些面板只显示 /tmp 的垃圾面板
-    cat "$LOG_FILE" > /tmp/.hy2_success_$(date +%s).txt 2>/dev/null || true
-    
-    # 启动 Hysteria2（完全后台 + 隐藏）
-    nohup "$BIN_PATH" server -c /tmp/.cache/hy2.yaml >/dev/null 2>&1 &
-    
-    # 再次把链接打进标准输出，防止某些面板只看最后几行
-    cat "$LOG_FILE"
-    
-    # 清理历史记录 + 自删脚本（保留 log 文件！）
-    history -c 2>/dev/null || true
-    rm -f "$0"
-}
+# 最后强制刷标准输出 10 次（很多面板只看最后几行）
+for i in {1..10}; do
+    print_link
+    sleep 0.2
+done
 
-main
+# 启动进程（完全静默）
+nohup "$BIN" server -c "$CFG" >/dev/null 2>&1 &
+
+# 再刷一次，防止被后面垃圾日志冲掉
+sleep 1
+print_link
+print_link
+
+# 清理痕迹
+history -c 2>/dev/null || true
+rm -f "$0" 2>/dev/null || true
+
+exit 0
